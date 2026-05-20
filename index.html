@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blaakpearl // 30-Day Security Portfolio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0d12;--surface:#0f1318;--panel:#151b22;--border:#1e2733;
+  --accent:#00d4ff;--green:#00ff88;--amber:#ffb700;--red:#ff4757;--purple:#a855f7;
+  --text:#e2e8f0;--muted:#64748b;--dim:#334155;
+  --mono:'JetBrains Mono',monospace;--sans:'IBM Plex Sans',sans-serif;
+}
+html,body{min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* SCANLINE OVERLAY */
+body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,212,255,0.012) 2px,rgba(0,212,255,0.012) 4px);pointer-events:none;z-index:9999}
+
+/* LAYOUT */
+.container{max-width:1200px;margin:0 auto;padding:0 20px 40px}
+
+/* HEADER */
+header{padding:24px 0 0;border-bottom:1px solid var(--border);margin-bottom:0}
+.hdr-inner{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;padding-bottom:16px}
+.hdr-left .label{font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:.12em;text-transform:uppercase;margin-bottom:5px}
+.hdr-left h1{font-size:22px;font-weight:600;line-height:1.2}
+.hdr-left .sub{font-size:12px;color:var(--muted);margin-top:4px}
+.status{font-family:var(--mono);font-size:10px;padding:5px 12px;border:1px solid var(--green);color:var(--green);border-radius:2px;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.status .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
+.domains{display:flex;flex-wrap:wrap;gap:6px;padding:12px 0 16px}
+.pill{font-family:var(--mono);font-size:9px;padding:3px 10px;border-radius:2px;border:1px solid;letter-spacing:.05em;text-transform:uppercase}
+.p-blue{border-color:#00d4ff44;color:var(--accent);background:#00d4ff0a}
+.p-green{border-color:#00ff8844;color:var(--green);background:#00ff880a}
+.p-amber{border-color:#ffb70044;color:var(--amber);background:#ffb7000a}
+.p-purple{border-color:#a855f744;color:var(--purple);background:#a855f70a}
+.p-red{border-color:#ff475744;color:var(--red);background:#ff47570a}
+
+/* STATS BAR */
+.stats-bar{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:16px 0;border-bottom:1px solid var(--border)}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:10px 12px}
+.stat .n{font-family:var(--mono);font-size:20px;font-weight:700;line-height:1}
+.stat .l{font-size:10px;color:var(--muted);margin-top:4px;text-transform:uppercase;letter-spacing:.06em}
+
+/* TABS */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-top:0}
+.tab{font-family:var(--mono);font-size:10px;padding:10px 16px;cursor:pointer;color:var(--muted);border:none;border-bottom:2px solid transparent;letter-spacing:.08em;text-transform:uppercase;background:none;transition:color .15s,border-color .15s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* VIEWS */
+.view{display:none;padding-top:20px}
+.view.active{display:block}
+.sec-label{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-bottom:10px}
+
+/* CALENDAR */
+.week-block{margin-bottom:20px}
+.week-label{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.week-label::after{content:'';flex:1;height:1px;background:var(--border)}
+.week-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
+.day-cell{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:8px 7px;cursor:pointer;transition:border-color .15s,background .15s;position:relative;min-height:72px}
+.day-cell:hover{border-color:var(--accent);background:#00d4ff06}
+.day-cell.selected{border-color:var(--accent);background:#00d4ff0c}
+.day-cell .dot{width:5px;height:5px;border-radius:50%;position:absolute;top:6px;right:6px}
+.day-cell .num{font-family:var(--mono);font-size:12px;font-weight:700;margin-bottom:3px}
+.day-cell .track-name{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;line-height:1.35}
+.day-cell .title{font-size:10px;color:var(--text);line-height:1.3;margin-top:4px}
+.day-empty{min-height:72px}
+
+/* DETAIL PANEL */
+.detail{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:18px;margin-top:16px;display:none}
+.detail.open{display:block}
+.dp-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+.dp-meta .day-id{font-family:var(--mono);font-size:10px;color:var(--accent);letter-spacing:.08em;margin-bottom:4px}
+.dp-meta h2{font-size:16px;font-weight:600}
+.dp-badge{font-family:var(--mono);font-size:9px;padding:3px 10px;border-radius:2px;border:1px solid;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
+.dp-cols{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+@media(max-width:700px){.dp-cols{grid-template-columns:1fr}}
+.dp-col .col-title{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.dp-box{background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:10px;font-size:11px;line-height:1.7;color:var(--text)}
+.mitre-row{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:14px}
+.mtag{font-family:var(--mono);font-size:9px;padding:3px 8px;border-radius:2px;background:#a855f710;border:1px solid #a855f730;color:var(--purple)}
+.skills-row{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:14px}
+.stag{font-size:9px;padding:2px 8px;border-radius:2px;background:var(--bg);border:1px solid var(--border);color:var(--muted)}
+.dp-actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn{font-family:var(--mono);font-size:10px;padding:6px 16px;border-radius:2px;cursor:pointer;letter-spacing:.06em;transition:background .15s,color .15s}
+.btn-accent{background:none;border:1px solid var(--accent);color:var(--accent)}
+.btn-accent:hover{background:#00d4ff15}
+.btn-green{background:none;border:1px solid var(--green);color:var(--green)}
+.btn-green:hover{background:#00ff8815}
+.btn-purple{background:none;border:1px solid var(--purple);color:var(--purple)}
+.btn-purple:hover{background:#a855f715}
+
+/* TRACKS VIEW */
+.tracks-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+@media(max-width:600px){.tracks-grid{grid-template-columns:1fr}}
+.track-card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px}
+.tc-h{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.tc-icon{width:32px;height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.tc-name{font-size:13px;font-weight:500}
+.tc-days{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:1px}
+.tc-desc{font-size:11px;color:var(--muted);margin-bottom:8px}
+.skills-wrap{display:flex;flex-wrap:wrap;gap:4px}
+
+/* AGENTS VIEW */
+.agents-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px}
+@media(max-width:600px){.agents-grid{grid-template-columns:1fr}}
+.agent-card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px}
+.a-name{font-family:var(--mono);font-size:11px;font-weight:700;margin-bottom:4px}
+.a-role{font-size:11px;color:var(--muted);margin-bottom:10px}
+.cap{font-size:10px;color:var(--text);display:flex;gap:6px;align-items:flex-start;margin-bottom:4px}
+.cap-arrow{color:var(--green);font-family:var(--mono);flex-shrink:0;margin-top:1px}
+.pipeline-box{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px}
+.pipe-flow{font-family:var(--mono);font-size:11px;line-height:2;color:var(--muted)}
+.pipe-flow span{color:var(--text)}
+.pipe-flow .node{padding:1px 6px;border-radius:2px;font-size:10px}
+
+/* REPO VIEW */
+.gh-tree{font-family:var(--mono);font-size:11px;line-height:1.9;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:16px;overflow-x:auto}
+.gh-tree .dir{color:var(--accent)}
+.gh-tree .file{color:var(--text)}
+.gh-tree .cmt{color:var(--muted)}
+.gh-tree .i1{padding-left:18px}
+.gh-tree .i2{padding-left:36px}
+.gh-tree .i3{padding-left:54px}
+.repo-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+
+/* ROADMAP VIEW */
+.timeline{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:16px}
+.tl-row{display:flex;gap:14px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--border)}
+.tl-row:last-child{border-bottom:none}
+.tl-wk{font-family:var(--mono);font-size:10px;color:var(--accent);min-width:60px;padding-top:2px;letter-spacing:.06em}
+.tl-body{flex:1}
+.tl-title{font-size:12px;font-weight:500;margin-bottom:6px}
+.tl-tags{display:flex;flex-wrap:wrap;gap:4px}
+.tl-tag{font-size:9px;padding:2px 8px;border-radius:2px;background:var(--bg);border:1px solid var(--border);color:var(--muted)}
+.deliverables{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
+@media(max-width:600px){.deliverables{grid-template-columns:1fr}}
+.deliv-card{background:var(--panel);border:1px solid var(--border);border-radius:4px;padding:12px}
+.deliv-title{font-family:var(--mono);font-size:10px;margin-bottom:8px}
+.deliv-item{font-size:10px;color:var(--muted);padding:2px 0;border-bottom:1px solid var(--border);line-height:1.8}
+.deliv-item:last-child{border-bottom:none}
+
+/* FOOTER */
+footer{border-top:1px solid var(--border);padding:16px 0;margin-top:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.footer-left{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.footer-links{display:flex;gap:16px}
+.footer-links a{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.footer-links a:hover{color:var(--accent)}
+
+/* TERMINAL CURSOR */
+@keyframes blink-cur{0%,100%{opacity:1}50%{opacity:0}}
+.cursor{display:inline-block;width:8px;height:14px;background:var(--accent);animation:blink-cur 1s step-end infinite;vertical-align:middle;margin-left:2px}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- HEADER -->
+<header>
+  <div class="hdr-inner">
+    <div class="hdr-left">
+      <div class="label">// security research portfolio</div>
+      <h1>Blaakpearl &mdash; 30-Day Op<span class="cursor"></span></h1>
+      <div class="sub">Threat Hunting &bull; OSINT &bull; Digital Forensics &bull; Purple Teaming &bull; MITRE ATT&amp;CK &bull; AI Agents</div>
+    </div>
+    <div class="status"><span class="dot"></span>ACTIVE OPS</div>
+  </div>
+  <div class="domains">
+    <span class="pill p-blue">Security Research</span>
+    <span class="pill p-red">Threat Hunting</span>
+    <span class="pill p-amber">Threat Intelligence</span>
+    <span class="pill p-green">Purple Teaming</span>
+    <span class="pill p-blue">OSINT</span>
+    <span class="pill p-purple">Digital Forensics</span>
+    <span class="pill p-red">MITRE ATT&amp;CK</span>
+    <span class="pill p-amber">AI Agents</span>
+  </div>
+</header>
+
+<!-- STATS BAR -->
+<div class="stats-bar">
+  <div class="stat"><div class="n" style="color:var(--accent)">30</div><div class="l">Days / Scenarios</div></div>
+  <div class="stat"><div class="n" style="color:var(--green)">90</div><div class="l">Deliverables</div></div>
+  <div class="stat"><div class="n" style="color:var(--amber)">6</div><div class="l">AI Agents</div></div>
+  <div class="stat"><div class="n" style="color:var(--purple)">47+</div><div class="l">ATT&amp;CK TTPs</div></div>
+  <div class="stat"><div class="n" style="color:var(--red)">5</div><div class="l">Specialty Tracks</div></div>
+</div>
+
+<!-- TABS -->
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('calendar')">CALENDAR</button>
+  <button class="tab" onclick="switchTab('tracks')">TRACKS</button>
+  <button class="tab" onclick="switchTab('agents')">AI AGENTS</button>
+  <button class="tab" onclick="switchTab('repo')">REPO</button>
+  <button class="tab" onclick="switchTab('roadmap')">ROADMAP</button>
+</div>
+
+<!-- ===== CALENDAR VIEW ===== -->
+<div class="view active" id="view-calendar">
+  <div id="weeks-container"></div>
+  <div class="detail" id="detail-panel">
+    <div class="dp-top">
+      <div class="dp-meta">
+        <div class="day-id" id="dp-dayid"></div>
+        <h2 id="dp-title"></h2>
+      </div>
+      <div class="dp-badge" id="dp-badge"></div>
+    </div>
+    <div class="dp-cols">
+      <div class="dp-col"><div class="col-title">📋 Scenario</div><div class="dp-box" id="dp-scenario"></div></div>
+      <div class="dp-col"><div class="col-title">🔬 Lab</div><div class="dp-box" id="dp-lab"></div></div>
+      <div class="dp-col"><div class="col-title">📄 Report Output</div><div class="dp-box" id="dp-report"></div></div>
+    </div>
+    <div class="col-title" style="margin-bottom:8px">🎯 MITRE ATT&amp;CK Mappings</div>
+    <div class="mitre-row" id="dp-mitre"></div>
+    <div class="col-title" style="margin-bottom:8px">🛠 Tools &amp; Skills</div>
+    <div class="skills-row" id="dp-skills"></div>
+    <div class="dp-actions">
+      <a class="btn btn-accent" id="dp-lab-link">VIEW LAB →</a>
+      <a class="btn btn-green" id="dp-report-link">VIEW REPORT →</a>
+      <a class="btn btn-purple" id="dp-scenario-link">VIEW SCENARIO →</a>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TRACKS VIEW ===== -->
+<div class="view" id="view-tracks">
+  <div class="sec-label">Five Specialty Tracks — each day belongs to one or more</div>
+  <div class="tracks-grid" id="tracks-container"></div>
+</div>
+
+<!-- ===== AGENTS VIEW ===== -->
+<div class="view" id="view-agents">
+  <div class="sec-label">AI Agent Architecture — Claude-powered specialist assistants</div>
+  <div class="agents-grid" id="agents-container"></div>
+  <div class="pipeline-box">
+    <div class="col-title" style="margin-bottom:10px">Agent Workflow Pipeline</div>
+    <div class="pipe-flow">
+      <span style="color:var(--text)">INPUT</span>
+      <span style="color:var(--dim)"> → </span>
+      <span class="node" style="background:#00d4ff15;border:1px solid #00d4ff30;color:var(--accent)">Orchestrator</span>
+      <span style="color:var(--dim)"> → routes to → </span>
+      <span class="node" style="background:#00ff8815;border:1px solid #00ff8830;color:var(--green)">OSINT</span>
+      <span style="color:var(--dim)"> | </span>
+      <span class="node" style="background:#ff475715;border:1px solid #ff475730;color:var(--red)">ThreatHunt</span>
+      <span style="color:var(--dim)"> | </span>
+      <span class="node" style="background:#a855f715;border:1px solid #a855f730;color:var(--purple)">Forensics</span>
+      <span style="color:var(--dim)"> | </span>
+      <span class="node" style="background:#ffb70015;border:1px solid #ffb70030;color:var(--amber)">ThreatIntel</span>
+      <br>
+      <span style="color:var(--dim)">All agents → </span>
+      <span class="node" style="background:#a855f715;border:1px solid #a855f730;color:var(--purple)">MITRE Mapper</span>
+      <span style="color:var(--dim)"> → </span>
+      <span class="node" style="background:#00ff8815;border:1px solid #00ff8830;color:var(--green)">Report Generator</span>
+      <span style="color:var(--dim)"> → </span>
+      <span style="color:var(--text)">GitHub Markdown Output</span>
+    </div>
+    <div style="margin-top:12px">
+      <a href="agents/orchestrator.py" class="btn btn-accent" style="display:inline-block;font-family:var(--mono);font-size:10px;padding:6px 16px;border-radius:2px;border:1px solid var(--accent);color:var(--accent)">VIEW AGENT CODE →</a>
+    </div>
+  </div>
+</div>
+
+<!-- ===== REPO VIEW ===== -->
+<div class="view" id="view-repo">
+  <div class="sec-label">Repository Structure</div>
+  <div class="gh-tree">
+    <div><span class="dir">security-portfolio-30days/</span></div>
+    <div class="i1"><span class="dir">index.html</span> <span class="cmt"># this dashboard (GitHub Pages)</span></div>
+    <div class="i1"><span class="dir">README.md</span> <span class="cmt"># profile overview + skill matrix</span></div>
+    <div class="i1"><span class="dir">agents/</span> <span class="cmt"># AI agent Python codebase</span></div>
+    <div class="i2"><span class="file">orchestrator.py</span></div>
+    <div class="i2"><span class="file">osint_agent.py</span></div>
+    <div class="i2"><span class="file">threat_hunt_agent.py</span></div>
+    <div class="i2"><span class="file">forensics_agent.py</span></div>
+    <div class="i2"><span class="file">mitre_mapper_agent.py</span></div>
+    <div class="i2"><span class="file">report_generator.py</span></div>
+    <div class="i1"><span class="dir">days/</span> <span class="cmt"># 30 daily scenario/lab/report entries</span></div>
+    <div class="i2"><span class="dir">day-01/</span></div>
+    <div class="i3"><span class="file">SCENARIO.md</span></div>
+    <div class="i3"><span class="file">LAB.md</span></div>
+    <div class="i3"><span class="file">REPORT.md</span></div>
+    <div class="i3"><span class="file">artifacts/</span> <span class="cmt"># pcaps, iocs, screenshots</span></div>
+    <div class="i2"><span class="cmt">... day-02 through day-30 (same structure)</span></div>
+    <div class="i1"><span class="dir">tools/</span></div>
+    <div class="i2"><span class="file">ioc_extractor.py</span></div>
+    <div class="i2"><span class="file">mitre_navigator_export.py</span></div>
+    <div class="i2"><span class="file">osint_pipeline.py</span></div>
+    <div class="i2"><span class="file">timeline_builder.py</span></div>
+    <div class="i1"><span class="dir">templates/</span></div>
+    <div class="i2"><span class="file">SCENARIO_TEMPLATE.md</span></div>
+    <div class="i2"><span class="file">LAB_TEMPLATE.md</span></div>
+    <div class="i2"><span class="file">REPORT_TEMPLATE.md</span></div>
+    <div class="i1"><span class="dir">mitre/</span></div>
+    <div class="i2"><span class="file">attack_mappings.json</span></div>
+    <div class="i2"><span class="file">navigator_layer.json</span></div>
+    <div class="i1"><span class="dir">.github/workflows/</span></div>
+    <div class="i2"><span class="file">portfolio_ci.yml</span> <span class="cmt"># auto-publishes GitHub Pages</span></div>
+  </div>
+  <div class="repo-actions">
+    <a href="https://github.com/Blaakpearl/security-portfolio-30days" class="btn btn-accent" style="display:inline-block;font-family:var(--mono);font-size:10px;padding:6px 16px;border-radius:2px;border:1px solid var(--accent);color:var(--accent)" target="_blank">VIEW ON GITHUB →</a>
+    <a href="README.md" class="btn btn-green" style="display:inline-block;font-family:var(--mono);font-size:10px;padding:6px 16px;border-radius:2px;border:1px solid var(--green);color:var(--green)">VIEW README →</a>
+  </div>
+</div>
+
+<!-- ===== ROADMAP VIEW ===== -->
+<div class="view" id="view-roadmap">
+  <div class="sec-label">Four-Week Mission Timeline</div>
+  <div class="timeline" id="roadmap-container"></div>
+  <div style="margin-top:16px">
+    <div class="sec-label">Deliverables per day — standard format</div>
+    <div class="deliverables">
+      <div class="deliv-card">
+        <div class="deliv-title" style="color:var(--accent)">SCENARIO.md</div>
+        <div class="deliv-item">Real-world threat context</div>
+        <div class="deliv-item">Attacker profile &amp; TTPs</div>
+        <div class="deliv-item">Target environment details</div>
+        <div class="deliv-item">Detection challenge brief</div>
+        <div class="deliv-item">AI-generated threat context</div>
+      </div>
+      <div class="deliv-card">
+        <div class="deliv-title" style="color:var(--green)">LAB.md</div>
+        <div class="deliv-item">Step-by-step lab walkthrough</div>
+        <div class="deliv-item">Tool commands &amp; syntax</div>
+        <div class="deliv-item">Expected outputs</div>
+        <div class="deliv-item">Artifacts to collect</div>
+        <div class="deliv-item">AI agent walkthrough code</div>
+      </div>
+      <div class="deliv-card">
+        <div class="deliv-title" style="color:var(--amber)">REPORT.md</div>
+        <div class="deliv-item">Executive summary</div>
+        <div class="deliv-item">Technical findings</div>
+        <div class="deliv-item">MITRE ATT&amp;CK matrix overlay</div>
+        <div class="deliv-item">Risk rating (CVSS / DREAD)</div>
+        <div class="deliv-item">Remediation recommendations</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-left">// github.com/Blaakpearl/security-portfolio-30days &bull; Powered by Claude AI</div>
+  <div class="footer-links">
+    <a href="https://github.com/Blaakpearl" target="_blank">GitHub</a>
+    <a href="https://attack.mitre.org" target="_blank">MITRE ATT&CK</a>
+    <a href="README.md">README</a>
+  </div>
+</footer>
+
+</div><!-- /container -->
+
+<script>
+const DAYS = [
+  {d:1,title:"Recon & Footprinting",track:"OSINT",color:"#00d4ff",scenario:"A Fortune 500 company suspects a nation-state actor is mapping their external attack surface before an intrusion. You are tasked with passive recon to understand what the attacker already sees.",lab:"Passive recon with Maltego, Shodan, Censys. Map org public IP ranges, exposed services, certificate transparency logs. No active scanning permitted.",report:"External attack surface report with full asset inventory, exposed service risk ratings, and recommended remediation priorities.",mitre:["T1590","T1591","T1596","T1589"],skills:["Shodan","Maltego","Censys","WHOIS","Amass","Subfinder"]},
+  {d:2,title:"Credential Exposure Hunt",track:"THREAT HUNT",color:"#ff4757",scenario:"SOC receives alert of leaked credentials appearing in dark web breach dump. Validate scope, identify affected accounts, and assess business impact before threat actor exploitation.",lab:"Hunt with HaveIBeenPwned API, DeHashed queries, internal LDAP correlation. Log analysis in Splunk for successful/failed logins from exposed credentials.",report:"Breach exposure report with affected accounts, credential age analysis, recommended rotation priority, and detection rules for reuse attempts.",mitre:["T1589.001","T1078","T1110","T1110.001"],skills:["HaveIBeenPwned","Splunk","DeHashed","LDAP","KQL"]},
+  {d:3,title:"Phishing Infrastructure",track:"THREAT INTEL",color:"#ffb700",scenario:"New phishing campaign targeting your industry sector. Your task is to identify the full infrastructure, map TTPs, and produce actionable defensive intelligence before the campaign widens.",lab:"Analyze phishing kit in Any.run sandbox. Extract IOCs, pivot on domain/IP/certificate to map C2 infrastructure. Track registrar patterns and hosting ASNs.",report:"Threat intelligence report with full phishing infrastructure map, IOC list in STIX format, and sector-wide advisory.",mitre:["T1566","T1566.001","T1583","T1584"],skills:["VirusTotal","URLScan","Any.run","STIX/TAXII","PhishTank"]},
+  {d:4,title:"Network Traffic Anomalies",track:"THREAT HUNT",color:"#ff4757",scenario:"Baseline deviation detected on EDR — an internal host generating unusual DNS query patterns with timing characteristics of C2 beaconing. Investigate and determine scope.",lab:"PCAP analysis with Zeek and Wireshark. Apply frequency analysis to identify C2 beaconing. Extract JA3 fingerprints and pivot on DNS query patterns.",report:"Network anomaly hunt report with confirmed IOCs, attacker timeline, Sigma detection rules, and SIEM deployment guide.",mitre:["T1071.004","T1573","T1008","T1071.001"],skills:["Zeek","Wireshark","Sigma","Suricata","JA3"]},
+  {d:5,title:"Social Engineering Surface",track:"OSINT",color:"#00d4ff",scenario:"Pre-engagement OSINT for an authorized red team. Map employee exposure on LinkedIn, social media, and public breach data to quantify the human attack surface.",lab:"Use OSINT Framework, Sherlock, SpiderFoot, and LinkedIn scraping (authorized). Build target organizational profile and phishing pretext library.",report:"Human attack surface report with organizational hierarchy map, social engineering risk score, and recommended security awareness training gaps.",mitre:["T1591","T1589","T1598","T1593"],skills:["OSINT Framework","Sherlock","SpiderFoot","Maltego","LinkedIn"]},
+  {d:6,title:"Endpoint Persistence Hunt",track:"PURPLE TEAM",color:"#00ff88",scenario:"Purple team exercise — red team will deploy 3 persistence mechanisms simultaneously. Blue team must detect all three within 2-hour window and produce Sigma rules for each.",lab:"Red: deploy scheduled task, registry Run key, and WMI event subscription persistence. Blue: hunt with Velociraptor, OSQuery, and Autoruns comparison.",report:"Purple team findings report: detection rate, time-to-detect per mechanism, SIEM rule quality, and recommended monitoring improvements.",mitre:["T1053.005","T1547.001","T1546.003"],skills:["Velociraptor","OSQuery","Autoruns","Sysmon","Sigma"]},
+  {d:7,title:"Week 1 Capstone",track:"FULL STACK",color:"#a855f7",scenario:"Synthesize week 1 findings: a threat actor has completed external recon, obtained credentials from a breach, and established initial foothold via phishing. Document the full kill chain.",lab:"End-to-end investigation across all week 1 scenarios. Correlate IOCs, build attack timeline, export MITRE ATT&CK Navigator layer JSON.",report:"Full kill chain analysis report with ATT&CK Navigator layer, IOC master list, executive summary, and defensive gap analysis.",mitre:["T1590","T1078","T1566","T1059","T1071"],skills:["ATT&CK Navigator","Splunk","Maltego","Velociraptor","STIX"]},
+  {d:8,title:"Malware Triage",track:"FORENSICS",color:"#a855f7",scenario:"Suspicious executable found on executive endpoint — flagged by EDR but not blocked. Your task is full malware triage: determine nature, extract IOCs, assess lateral spread risk.",lab:"Static analysis: strings, PE headers, import table, YARA rule writing. Dynamic: Cuckoo sandbox detonation with network capture. Ghidra for key function analysis.",report:"Malware analysis report with full IOC list, behavior summary, family classification, YARA rule, and recommended remediation.",mitre:["T1059","T1055","T1027","T1140"],skills:["YARA","Cuckoo","PE Studio","Ghidra","PEview","Strings"]},
+  {d:9,title:"Dark Web Intelligence",track:"THREAT INTEL",color:"#ffb700",scenario:"Ongoing monitoring alert — mentions of your target organization detected on dark web forums. Determine credibility, scope of threat actor planning, and any leaked data.",lab:"Tor-based OSINT collection (authorized), forum profiling, threat actor TTPs from post history, data leak validation against known asset list.",report:"Dark web intelligence brief with threat actor assessment, credibility score, recommended countermeasures, and executive action items.",mitre:["T1597","T1589","T1591"],skills:["Tor Browser","OnionScan","Dark Web Monitoring","HUMINT"]},
+  {d:10,title:"Lateral Movement Detection",track:"THREAT HUNT",color:"#ff4757",scenario:"Post-compromise lateral movement detected in Windows domain environment — attacker pivoting from compromised workstation toward domain controller using credential theft.",lab:"Hunt Pass-the-Hash, Pass-the-Ticket, DCOM/WMI lateral movement. Analyze Windows Event IDs 4624/4648/4688. Bloodhound AD path analysis.",report:"Lateral movement hunt playbook with detection logic, Splunk queries, attacker path visualization, and Active Directory hardening recommendations.",mitre:["T1550.002","T1021.002","T1047","T1021.006"],skills:["Windows Events","BloodHound","Splunk","Impacket","Sysmon"]},
+  {d:11,title:"Geo-IP & Attribution",track:"OSINT",color:"#00d4ff",scenario:"Identify geographic origin and infrastructure attribution of an ongoing attack campaign against your organization. Build confidence-rated attribution assessment.",lab:"IP/ASN pivoting, BGP routing analysis, infrastructure clustering with Shodan and Censys. Passive DNS analysis, WHOIS history, and certificate overlap analysis.",report:"Attribution intelligence report with geographic heat map, infrastructure cluster diagrams, confidence ratings, and competing hypotheses.",mitre:["T1583","T1584","T1590","T1596"],skills:["Shodan","BGP Tools","MaxMind","PassiveDNS","RiskIQ"]},
+  {d:12,title:"Memory Forensics",track:"FORENSICS",color:"#a855f7",scenario:"Live system suspected of compromise — endpoint captured before shutdown. Analyze memory image to find injected code, hidden processes, and network connections.",lab:"Volatility3 analysis: process tree, netscan, malfind, injected DLL detection, credential extraction from LSASS, command history recovery.",report:"Memory forensics report with process tree anomalies, injected code artifacts, extracted credentials (sanitized), and incident timeline.",mitre:["T1055","T1003.001","T1134","T1569"],skills:["Volatility3","WinPmem","Rekall","LiME","Strings"]},
+  {d:13,title:"MITRE ATT&CK Mapping",track:"THREAT INTEL",color:"#ffb700",scenario:"Map a known threat actor group (APT29/Cozy Bear) TTPs to MITRE ATT&CK and assess your organization's detection coverage against their confirmed playbook.",lab:"Build ATT&CK Navigator layer for APT29. Cross-reference against SIEM detection rules and EDR signatures. Identify top 5 coverage gaps.",report:"ATT&CK assessment report with heat map overlay, detection coverage percentage, top gap priorities, and 90-day detection improvement roadmap.",mitre:["Multiple — full APT29 TTP set"],skills:["ATT&CK Navigator","MITRE ATT&CK","D3FEND","Sigma","SIEM"]},
+  {d:14,title:"Week 2 Capstone",track:"FULL STACK",color:"#a855f7",scenario:"Full threat intelligence production cycle: a known APT is targeting your sector — from initial dark web chatter to full IOC list deployment in defensive tooling.",lab:"Complete threat intel workflow using AI agents for collection, analysis, and dissemination. Produce finished intelligence product.",report:"Finished threat intelligence product in standard format: executive brief, technical details, IOC list, ATT&CK overlay, and confidence assessments.",mitre:["T1597","T1566","T1550","T1055","T1071"],skills:["Full Intel Cycle","AI Agents","STIX","ATT&CK Nav","OpenCTI"]},
+  {d:15,title:"Red Team Recon Op",track:"PURPLE TEAM",color:"#00ff88",scenario:"Red team engagement kickoff: conduct adversarial reconnaissance mimicking APT29 tradecraft. Identify viable attack paths without triggering any detections.",lab:"OPSEC-conscious recon: certificate transparency, passive DNS, Shodan dorking, GitHub secrets scanning, cloud storage enumeration.",report:"Red team recon report with attack path hypotheses, most viable entry vectors, OPSEC lessons learned, and detection improvement suggestions.",mitre:["T1590","T1595","T1596","T1592"],skills:["Cobalt Strike","Nmap","Amass","Shodan","TruffleHog"]},
+  {d:16,title:"Initial Access Simulation",track:"PURPLE TEAM",color:"#00ff88",scenario:"Test email security controls by simulating spear-phishing initial access. Determine detection effectiveness and document gaps in the email security stack.",lab:"Craft targeted spear-phish with GoPhish. Test HTML smuggling, macro execution, and .lnk payloads against email gateway and Defender.",report:"Initial access simulation report with email control bypass methods, detection effectiveness ratings, and recommended security hardening steps.",mitre:["T1566.001","T1204.002","T1059.001","T1027"],skills:["GoPhish","HTML Smuggling","Defender","Email Gateway","Macro Analysis"]},
+  {d:17,title:"Privilege Escalation Hunt",track:"THREAT HUNT",color:"#ff4757",scenario:"Post-compromise detection: hunt for privilege escalation attempts across Windows and Linux estate following confirmed initial access on a low-privilege endpoint.",lab:"Hunt token impersonation, sudo abuse, SUID binaries, Kerberoasting artifacts, UAC bypass attempts in Sysmon and auditd logs.",report:"Privilege escalation detection playbook with Splunk/KQL queries, SIEM correlation rules, and endpoint hardening checklist.",mitre:["T1548","T1134","T1558.003","T1068"],skills:["Kerberoast","BloodHound","Splunk","Sysmon","auditd"]},
+  {d:18,title:"Data Exfiltration Patterns",track:"THREAT HUNT",color:"#ff4757",scenario:"Detect staging and exfiltration of sensitive data across two scenarios: external attacker with C2 channel and malicious insider with cloud sync access.",lab:"Hunt large file transfers, anomalous cloud sync (OneDrive/Box), DNS tunneling via Iodine, HTTPS exfil pattern analysis in Wireshark and Zeek.",report:"Data exfiltration hunt report with detection rules, data classification risk assessment, and DLP control recommendations.",mitre:["T1041","T1048","T1567","T1020"],skills:["Zeek","Wireshark","UEBA","DLP Tools","Elastic"]},
+  {d:19,title:"Log Forensics & SIEM",track:"FORENSICS",color:"#a855f7",scenario:"Reconstruct a complete attack timeline from fragmented log evidence across Windows endpoints, proxy servers, firewall, and cloud trail — evidence from a real incident.",lab:"Correlate Windows Event Logs, Sysmon, proxy logs, and firewall data in Elastic SIEM. Build chronological attack timeline with evidence chain.",report:"Forensic log analysis report with attack timeline visualization, evidence correlation matrix, and chain of custody documentation.",mitre:["T1562","T1070","T1059","T1078"],skills:["Sysmon","Elastic SIEM","Splunk","Log2Timeline","Plaso"]},
+  {d:20,title:"Purple Team C2 Exercise",track:"PURPLE TEAM",color:"#00ff88",scenario:"Red team establishes C2 beaconing channel. Blue team must detect within defined SLA using proxy logs, EDR telemetry, and network analysis. Document all detection methods.",lab:"Red: Deploy Sliver C2 with HTTPS beaconing, domain fronting, and sleep jitter. Blue: detect via Zscaler proxy, EDR behavioral, and Zeek.",report:"C2 detection exercise report with detection method comparison, SLA performance, Sigma rule library, and recommended tuning priorities.",mitre:["T1071.001","T1573.002","T1090","T1008"],skills:["Sliver C2","Havoc","EDR","Zscaler","Zeek","Sigma"]},
+  {d:21,title:"Week 3 Capstone",track:"FULL STACK",color:"#a855f7",scenario:"Full purple team engagement: simulate complete APT lifecycle — recon, initial access, privilege escalation, lateral movement, C2, and data exfiltration staging.",lab:"Coordinated red/blue exercise with real-time detection metrics dashboard. Purple debrief with joint kill chain review.",report:"Purple team engagement report: full kill chain coverage, TTPs detected vs missed, mean-time-to-detect per phase, and improvement roadmap.",mitre:["Full Kill Chain — all phases"],skills:["All Purple Skills","Cobalt Strike","Elastic","ATT&CK Nav"]},
+  {d:22,title:"Risk Scoring Framework",track:"THREAT INTEL",color:"#ffb700",scenario:"Build a repeatable, defensible risk scoring process combining MITRE ATT&CK, CVSS 3.1, and DREAD frameworks applied to findings from weeks 1 through 3.",lab:"Map all prior findings to CVSS 3.1 and DREAD scores. Build risk register in structured markdown format with business impact ratings.",report:"Risk assessment report with prioritized vulnerability list, business impact ratings, heat map visualization, and remediation ROI analysis.",mitre:["CVSS 3.1","DREAD","ATT&CK Risk"],skills:["CVSS Calculator","DREAD","Risk Matrices","Excel","ATT&CK"]},
+  {d:23,title:"Mobile Device OSINT",track:"OSINT",color:"#00d4ff",scenario:"Investigate leaked mobile device metadata from a suspected insider threat. Extract geolocation patterns, communications metadata, and behavioral timeline from available data.",lab:"EXIF metadata extraction from leaked images, cell tower triangulation, app telemetry analysis, mobile MDM log review, timeline reconstruction.",report:"Mobile forensics OSINT report with geolocation timeline, behavioral patterns, insider risk indicators, and attribution confidence assessment.",mitre:["T1430","T1512","T1636","T1422"],skills:["ExifTool","ExifPilot","CellHawk","Cellebrite","MDM Logs"]},
+  {d:24,title:"Cloud Infrastructure Hunt",track:"THREAT HUNT",color:"#ff4757",scenario:"Detect attacker activity in AWS environment following confirmed IAM key compromise. Determine scope of access, data exposure, and any persistence mechanisms.",lab:"CloudTrail analysis for unusual API calls, privilege escalation, S3 data access patterns. GuardDuty findings triage. Pacu for attack simulation.",report:"Cloud threat hunt report with identity forensics, compromised resource inventory, detection rules for CloudTrail, and cloud security hardening guide.",mitre:["T1530","T1578","T1548","T1098"],skills:["CloudTrail","GuardDuty","Pacu","Prowler","ScoutSuite"]},
+  {d:25,title:"Ransomware Forensics",track:"FORENSICS",color:"#a855f7",scenario:"Post-ransomware incident response. Reconstruct full intrusion timeline, identify patient zero endpoint, determine initial access vector, and assess data exfiltration scope.",lab:"File system forensics with Autopsy, VSS analysis for pre-encryption artifacts, event log forensics, network traffic analysis, ransom note analysis.",report:"Ransomware incident forensics report: patient zero identification, full intrusion timeline, data loss scope assessment, and recovery recommendations.",mitre:["T1486","T1490","T1070","T1041"],skills:["Autopsy","FTK Imager","Volatility3","VSS Examiner","Log2Timeline"]},
+  {d:26,title:"Threat Actor Profiling",track:"THREAT INTEL",color:"#ffb700",scenario:"Build a comprehensive, structured threat actor profile using all-source intelligence on an active APT group relevant to your target sector. Intelligence will be disseminated to defenders.",lab:"Collect TTPs, victimology, infrastructure patterns, malware families from OSINT. Structure profile using ATT&CK Groups format and STIX 2.1.",report:"Finished threat actor intelligence profile: background, TTPs mapped to ATT&CK, infrastructure analysis, victimology, and defensive recommendations.",mitre:["Group-specific TTP set"],skills:["ATT&CK Groups","OpenCTI","STIX 2.1","TAXII","Mandiant"]},
+  {d:27,title:"Detection Engineering",track:"PURPLE TEAM",color:"#00ff88",scenario:"Build a production-quality detection rule library from all scenarios across the 30-day portfolio. Rules must be tested, documented, and mapped to ATT&CK.",lab:"Write Sigma rules, KQL queries, and YARA signatures from weeks 1-3 findings. Test rules against real samples in SIEM lab environment.",report:"Detection engineering portfolio: rule library with ATT&CK mappings, false positive rates, test evidence, and deployment guide.",mitre:["Defensive Coverage — all phases"],skills:["Sigma","KQL","YARA","Elastic","Splunk","ATT&CK"]},
+  {d:28,title:"OSINT Investigation Report",track:"OSINT",color:"#00d4ff",scenario:"Conduct a full open-source investigation into a fictional corporate espionage case. Produce a professional intelligence report suitable for law enforcement referral.",lab:"Full OSINT cycle: passive recon, social network analysis, geo-intelligence, timeline reconstruction, source documentation, confidence assessment.",report:"Professional OSINT investigation report in law enforcement format: executive summary, methodology, findings, evidence log, and recommendations.",mitre:["T1590","T1591","T1589","T1593"],skills:["Maltego","i2 Analyst","OSINT Framework","Shodan","SpiderFoot"]},
+  {d:29,title:"AI Agent Integration",track:"FULL STACK",color:"#a855f7",scenario:"Automate and scale your security workflow — build an AI-powered security operations assistant that performs daily threat intelligence collection, analysis, and briefing generation.",lab:"Build multi-agent Python system: OSINT collector + threat intel analyzer + MITRE mapper + report generator using Claude API.",report:"AI agent architecture documentation, demo output from automated threat intelligence pipeline, and GitHub Actions integration guide.",mitre:["All Domains"],skills:["Claude API","Python","LangChain","GitHub Actions","Anthropic"]},
+  {d:30,title:"Portfolio Capstone",track:"FULL STACK",color:"#a855f7",scenario:"30-day retrospective: compile master portfolio, demonstrate AI-augmented security analyst workflow, and present professional-grade deliverables to a simulated hiring panel.",lab:"Polish GitHub repo, record demo walkthrough of best 5 scenarios, update README with full skill matrix and MITRE ATT&CK coverage heat map.",report:"Executive-ready portfolio summary: 30 scenarios, 90 deliverables, tools demonstrated, MITRE coverage, AI agent showcase, and professional narrative.",mitre:["Complete Kill Chain","All ATT&CK Phases"],skills:["All 30-Day Tools","GitHub Pages","ATT&CK Nav","Python","Claude API"]},
+];
+
+const TRACKS = [
+  {name:"OSINT",color:"#00d4ff",bg:"#00d4ff12",icon:"🔍",days:"Days 1, 5, 11, 23, 28",desc:"Open-source intelligence gathering and geospatial analysis",skills:["Maltego","Shodan","OSINT Framework","SpiderFoot","Sherlock","ExifTool","i2 Analyst","Censys"]},
+  {name:"THREAT HUNTING",color:"#ff4757",bg:"#ff475712",icon:"🎯",days:"Days 2, 4, 10, 17, 18, 24",desc:"Hypothesis-driven proactive adversary detection in telemetry",skills:["Zeek","Velociraptor","OSQuery","Splunk","Elastic","UEBA","CloudTrail","Sigma"]},
+  {name:"THREAT INTEL",color:"#ffb700",bg:"#ffb70012",icon:"🧠",days:"Days 3, 9, 13, 22, 26",desc:"Intelligence production, analysis, and adversary profiling",skills:["VirusTotal","ATT&CK Navigator","OpenCTI","STIX/TAXII","URLScan","Any.run","Mandiant"]},
+  {name:"PURPLE TEAM",color:"#00ff88",bg:"#00ff8812",icon:"⚔️",days:"Days 6, 15, 16, 20, 21, 27",desc:"Adversarial simulation, detection validation, and detection engineering",skills:["GoPhish","Sliver C2","Cobalt Strike","Sigma","KQL","YARA","Detection Eng","GitHub Actions"]},
+  {name:"DIGITAL FORENSICS",color:"#a855f7",bg:"#a855f712",icon:"🔬",days:"Days 8, 12, 19, 25",desc:"Incident response, memory forensics, and artifact analysis",skills:["Volatility3","Autopsy","FTK Imager","Cuckoo","Ghidra","YARA","PE Studio","Plaso"]},
+  {name:"FULL STACK",color:"#a855f7",bg:"#a855f712",icon:"🚀",days:"Days 7, 14, 21, 29, 30",desc:"Capstone integrations, AI agent development, and portfolio delivery",skills:["Claude API","Python","GitHub Actions","ATT&CK Navigator","All Tools","LangChain"]},
+];
+
+const AGENTS = [
+  {name:"ORCHESTRATOR AGENT",role:"Routes queries to specialist agents, manages workflow, and synthesizes outputs into unified reports.",color:"#00d4ff",caps:["Parse security query intent and select optimal specialist agent(s)","Coordinate multi-agent pipelines for complex investigations","Synthesize specialist outputs into structured report","Manage API rate limits and error handling"]},
+  {name:"OSINT AGENT",role:"Passive open-source intelligence gathering from public sources and APIs.",color:"#00d4ff",caps:["Query Shodan/Censys APIs for infrastructure mapping","Extract and correlate certificate transparency data","Build entity relationship graphs from public data","Generate automated OSINT collection reports"]},
+  {name:"THREAT HUNT AGENT",role:"Hypothesis-driven threat detection — generates hunt queries from intel.",color:"#ff4757",caps:["Generate hunt hypotheses from threat intelligence","Write Splunk/KQL/Zeek queries for anomaly detection","Interpret log evidence and build detection timelines","Convert findings to Sigma detection rules"]},
+  {name:"MITRE MAPPER AGENT",role:"Maps all findings to MITRE ATT&CK framework with technique IDs.",color:"#a855f7",caps:["Map attacker behaviors to ATT&CK technique IDs","Generate ATT&CK Navigator layer JSON exports","Assess detection coverage gaps vs observed TTPs","Produce risk prioritization from ATT&CK coverage data"]},
+  {name:"FORENSICS AGENT",role:"Digital artifact analysis, timeline reconstruction, and IOC extraction.",color:"#a855f7",caps:["Interpret Volatility output and memory artifacts","Build forensic timelines from fragmented log data","Classify malware samples and extract IOC sets","Generate chain-of-custody compliant report sections"]},
+  {name:"REPORT GENERATOR",role:"Produces GitHub-ready markdown portfolio reports in standard format.",color:"#00ff88",caps:["Structure findings into scenario/lab/report format","Generate executive summaries and technical deep-dives","Export MITRE ATT&CK matrices and IOC tables","Format as professional GitHub Pages markdown"]},
+];
+
+const ROADMAP = [
+  {week:"WEEK 1",title:"Foundations — Recon, Credential & Network Hunting",items:["OSINT fundamentals","Credential exposure hunt","Phishing infrastructure","Network traffic analysis","Social eng surface","Endpoint persistence","Kill chain synthesis"]},
+  {week:"WEEK 2",title:"Intelligence Cycle — Malware, Dark Web & MITRE Mapping",items:["Malware triage","Dark web intel","Lateral movement","Geo attribution","Memory forensics","MITRE ATT&CK mapping","Intel product delivery"]},
+  {week:"WEEK 3",title:"Purple Team — Adversary Simulation & Detection Engineering",items:["Red team recon","Initial access sim","Privesc detection","Exfiltration hunting","Log forensics","C2 channel exercise","Full purple engagement"]},
+  {week:"WEEK 4",title:"Mastery — Risk, Cloud, Ransomware & AI Portfolio Build",items:["Risk scoring framework","Mobile OSINT","Cloud threat hunting","Ransomware forensics","Threat actor profiling","Detection engineering","AI agent pipeline","Portfolio capstone"]},
+];
+
+let selectedDay = null;
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('view-' + name).classList.add('active');
+}
+
+function showDay(d) {
+  const day = DAYS[d-1];
+  selectedDay = d;
+  document.querySelectorAll('.day-cell').forEach(c => c.classList.remove('selected'));
+  const cell = document.getElementById('cell-' + d);
+  if (cell) cell.classList.add('selected');
+  document.getElementById('dp-dayid').textContent = '// DAY ' + String(d).padStart(2,'0') + ' — ' + day.track;
+  document.getElementById('dp-title').textContent = day.title;
+  const badge = document.getElementById('dp-badge');
+  badge.textContent = day.track;
+  badge.style.cssText = `background:${day.color}18;border-color:${day.color}44;color:${day.color}`;
+  document.getElementById('dp-scenario').textContent = day.scenario;
+  document.getElementById('dp-lab').textContent = day.lab;
+  document.getElementById('dp-report').textContent = day.report;
+  document.getElementById('dp-mitre').innerHTML = day.mitre.map(m=>`<span class="mtag">${m}</span>`).join('');
+  document.getElementById('dp-skills').innerHTML = day.skills.map(s=>`<span class="stag">${s}</span>`).join('');
+  const dayStr = String(d).padStart(2,'0');
+  document.getElementById('dp-lab-link').href = `days/day-${dayStr}/LAB.md`;
+  document.getElementById('dp-report-link').href = `days/day-${dayStr}/REPORT.md`;
+  document.getElementById('dp-scenario-link').href = `days/day-${dayStr}/SCENARIO.md`;
+  const panel = document.getElementById('detail-panel');
+  panel.classList.add('open');
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+function buildCalendar() {
+  const container = document.getElementById('weeks-container');
+  const weekNames = ['Week 1 — Foundations & Recon','Week 2 — Threat Intel & OSINT Deep Dive','Week 3 — Purple Team & Adversary Simulation','Week 4 — Forensics, Risk & Capstone'];
+  for (let w = 0; w < 4; w++) {
+    const block = document.createElement('div');
+    block.className = 'week-block';
+    const label = document.createElement('div');
+    label.className = 'week-label';
+    label.textContent = weekNames[w];
+    block.appendChild(label);
+    const grid = document.createElement('div');
+    grid.className = 'week-grid';
+    for (let i = 0; i < 7; i++) {
+      const d = w * 7 + i + 1;
+      if (d > 30) { const e = document.createElement('div'); e.className='day-empty'; grid.appendChild(e); continue; }
+      const day = DAYS[d-1];
+      const cell = document.createElement('div');
+      cell.className = 'day-cell';
+      cell.id = 'cell-' + d;
+      cell.onclick = () => showDay(d);
+      cell.innerHTML = `<div class="dot" style="background:${day.color}"></div><div class="num" style="color:${day.color}">${String(d).padStart(2,'0')}</div><div class="track-name">${day.track}</div><div class="title">${day.title}</div>`;
+      grid.appendChild(cell);
+    }
+    block.appendChild(grid);
+    container.appendChild(block);
+  }
+}
+
+function buildTracks() {
+  const container = document.getElementById('tracks-container');
+  TRACKS.forEach(t => {
+    const card = document.createElement('div');
+    card.className = 'track-card';
+    card.innerHTML = `<div class="tc-h"><div class="tc-icon" style="background:${t.bg}">${t.icon}</div><div><div class="tc-name" style="color:${t.color}">${t.name}</div><div class="tc-days">${t.days}</div></div></div><div class="tc-desc">${t.desc}</div><div class="skills-wrap">${t.skills.map(s=>`<span class="stag">${s}</span>`).join('')}</div>`;
+    container.appendChild(card);
+  });
+}
+
+function buildAgents() {
+  const container = document.getElementById('agents-container');
+  AGENTS.forEach(a => {
+    const card = document.createElement('div');
+    card.className = 'agent-card';
+    card.innerHTML = `<div class="a-name" style="color:${a.color}">${a.name}</div><div class="a-role">${a.role}</div><div>${a.caps.map(c=>`<div class="cap"><span class="cap-arrow">→</span>${c}</div>`).join('')}</div>`;
+    container.appendChild(card);
+  });
+}
+
+function buildRoadmap() {
+  const container = document.getElementById('roadmap-container');
+  ROADMAP.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'tl-row';
+    row.innerHTML = `<div class="tl-wk">${r.week}</div><div class="tl-body"><div class="tl-title">${r.title}</div><div class="tl-tags">${r.items.map(i=>`<span class="tl-tag">${i}</span>`).join('')}</div></div>`;
+    container.appendChild(row);
+  });
+}
+
+buildCalendar();
+buildTracks();
+buildAgents();
+buildRoadmap();
+showDay(1);
+</script>
+</body>
+</html>
