@@ -1,0 +1,241 @@
+| =========================================================================
+| Day 19 — Splunk SPL Forensic Queries: Log Analysis & Timeline
+| NovaCrest Capital Group | Digital Forensics
+| Case: NCA-2026-06 | Window: 2026-06-14 08:00Z → 2026-06-18 18:00Z
+| =========================================================================
+| Indexes:
+|   index=wineventlog   Windows Security + System Events
+|   index=sysmon        Sysmon Operational Events
+|   index=linux_audit   auditd
+|   index=zeek_*        Zeek network logs
+|   index=cloudtrail    AWS CloudTrail
+| =========================================================================
+
+
+| =========================================================================
+| TIMELINE RECONSTRUCTION
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY T1: Normalized Attack Timeline — All Sources, UTC Corrected
+| -------------------------------------------------------------------------
+(index=wineventlog OR index=sysmon)
+    earliest="2026-06-14T12:00:00"
+    latest="2026-06-15T00:00:00"
+| eval ts_utc=case(
+    host="WS-FIN-04", _time+14400,   // EDT +4h → UTC
+    host="NGFW-01",   _time-3600,    // UTC+1 -1h → UTC
+    1==1,             _time           // Already UTC
+  )
+| eval ts_utc_readable=strftime(ts_utc, "%Y-%m-%dT%H:%M:%SZ")
+| eval technique=case(
+    EventCode==4688, "T1059 Execution",
+    EventCode==4624, "T1078 Valid Account",
+    EventCode==4672, "T1134 Priv Escalation",
+    EventCode==4769, "T1558.003 Kerberoasting",
+    EventCode==1102, "T1070.001 Log Clear",
+    EventCode==104,  "T1070.001 Log Clear",
+    EventCode==7036, "T1562.001 Service Change",
+    "Unknown"
+  )
+| where technique!="Unknown"
+| table ts_utc_readable, host, source, EventCode, technique, user, _raw
+| sort ts_utc_readable
+
+
+| -------------------------------------------------------------------------
+| QUERY T2: Multi-Source Event Density by Hour (Attack Heatmap)
+| -------------------------------------------------------------------------
+(index=wineventlog OR index=sysmon OR index=linux_audit OR index=zeek_conn)
+    earliest="2026-06-14T12:00:00" latest="2026-06-15T00:00:00"
+| bucket _time span=1h
+| stats count by _time, index
+| xyseries _time, index, count
+| rename wineventlog as "Windows Events"
+           sysmon as "Sysmon"
+           linux_audit as "auditd"
+           zeek_conn as "Zeek Network"
+
+
+| =========================================================================
+| LOG TAMPERING DETECTION
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY L1: Log Clear Events (T1070.001)
+| -------------------------------------------------------------------------
+index=wineventlog (EventCode=1102 OR EventCode=104)
+| eval log_type=case(EventCode==1102, "Security Log", EventCode==104, "System Log", "Unknown")
+| eval attk_technique="T1070.001"
+| eval severity="CRITICAL"
+| eval forensic_note="Evidence destruction — examine Sysmon for corroborating events in same window"
+| table _time, host, EventCode, log_type, user, severity, forensic_note, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY L2: EventRecord ID Gap Detection (Selective Deletion)
+| -------------------------------------------------------------------------
+index=wineventlog
+| sort 0 _time
+| streamstats current=false last(RecordNumber) as prev_record
+              last(_time) as prev_time
+              by Channel
+| eval record_gap=RecordNumber - prev_record - 1
+| eval time_gap_min=round((_time - prev_time) / 60, 1)
+| where record_gap > 50  // More than 50 records missing
+| eval attk_technique="T1070.001"
+| eval severity=case(record_gap>500, "Critical", record_gap>100, "High", "Medium")
+| eval forensic_note="EventRecord gap of " + tostring(record_gap) + " records in " + Channel + " — possible selective deletion"
+| table _time, host, Channel, RecordNumber, prev_record, record_gap,
+        time_gap_min, severity, forensic_note, attk_technique
+| sort -record_gap
+
+
+| -------------------------------------------------------------------------
+| QUERY L3: Log Asymmetry — Security Cleared but Sysmon Intact
+| -------------------------------------------------------------------------
+| Find events in Sysmon for which there are NO corresponding Security events
+| within a 5-minute window — confirms selective log clearing
+|
+index=sysmon EventCode=1
+    earliest="2026-06-14T13:00:00" latest="2026-06-14T15:30:00"
+| eval ts_utc=_time+14400  // EDT → UTC
+| stats count as sysmon_events by host, bin(ts_utc, 5m)
+| join type=left host [
+    search index=wineventlog EventCode=4688
+    earliest="2026-06-14T13:00:00" latest="2026-06-14T15:30:00"
+    | eval ts_utc=_time+14400
+    | stats count as security_events by host, bin(ts_utc, 5m)
+  ]
+| where isnull(security_events) OR security_events < sysmon_events / 5
+| eval attk_technique="T1070.001"
+| eval forensic_note="Sysmon has events; Security log has none — Security log cleared"
+| table ts_utc, host, sysmon_events, security_events, forensic_note, attk_technique
+| sort ts_utc
+
+
+| -------------------------------------------------------------------------
+| QUERY L4: Linux Bash History Clearing (T1070.003)
+| -------------------------------------------------------------------------
+index=linux_audit
+    (proctitle LIKE "*history*" OR
+     exe="/usr/bin/shred" OR
+     exe="/bin/rm" AND name LIKE "*bash_history*")
+| eval attk_technique="T1070.003"
+| table _time, host, uid, exe, proctitle, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| EVIDENCE CORRELATION
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY C1: Cross-Source Evidence Correlation Matrix
+| -------------------------------------------------------------------------
+| For each critical event in Sysmon, find supporting events in other sources
+| within 60 seconds
+|
+index=sysmon EventCode=10 TargetImage="*lsass*"
+| eval lsass_time=_time + 14400  // EDT → UTC
+| join type=left lsass_time [
+    search index=wineventlog EventCode=4672
+    | eval ts=_time + 14400
+    | rename ts as lsass_time
+    | stats count by lsass_time, user, PrivilegeList
+    | eval corroborating_4672="Yes"
+  ]
+| join type=left lsass_time [
+    search index=zeek_ssl
+    | where orig_bytes > 100000
+    | eval ts=_time
+    | rename ts as lsass_time
+    | stats count by lsass_time
+    | eval corroborating_network="Yes"
+  ]
+| eval evidence_strength=case(
+    isnotnull(corroborating_4672) AND isnotnull(corroborating_network),
+    "STRONG — 3 sources",
+    isnotnull(corroborating_4672) OR isnotnull(corroborating_network),
+    "MODERATE — 2 sources",
+    "WEAK — Sysmon only"
+  )
+| table lsass_time, SourceImage, TargetImage, GrantedAccess,
+        corroborating_4672, corroborating_network, evidence_strength
+
+
+| -------------------------------------------------------------------------
+| QUERY C2: ATT&CK Technique Coverage — Evidence by Source
+| -------------------------------------------------------------------------
+(index=wineventlog OR index=sysmon OR index=linux_audit OR index=zeek_ssl)
+    earliest="2026-06-14T12:00:00" latest="2026-06-15T00:00:00"
+| eval technique=case(
+    EventCode==4688 OR EventCode=="sysmon_1", "T1059",
+    EventCode==4672 OR EventCode=="sysmon_10", "T1134.001",
+    EventCode==4769, "T1558.003",
+    EventCode==1102 OR EventCode==104, "T1070.001",
+    EventCode=="sysmon_13", "T1548.002",
+    key=="sudo_exec", "T1548.003",
+    key=="suid_exec", "T1548.001",
+    "other"
+  )
+| where technique!="other"
+| stats count by technique, index
+| eval source_category=index
+| table technique, source_category, count
+| sort technique
+
+
+| -------------------------------------------------------------------------
+| QUERY C3: Full Kill Chain Timeline (All Sources Combined)
+| -------------------------------------------------------------------------
+(
+  (index=sysmon EventCode=1 Image="*WINWORD*") OR
+  (index=wineventlog EventCode=4672 PrivilegeList="*SeImpersonatePrivilege*") OR
+  (index=wineventlog EventCode=4769 TicketEncryptionType="0x17") OR
+  (index=wineventlog EventCode=1102) OR
+  (index=linux_audit key=sudo_exec) OR
+  (index=zeek_ssl ja3="a0e9f5d64349fb13191bc781f81f42e1")
+)
+| eval ts_utc=case(
+    host="WS-FIN-04", _time + 14400,
+    host="NGFW-01",   _time - 3600,
+    1==1,             _time
+  )
+| eval phase=case(
+    EventCode==1 AND Image LIKE "*WINWORD*",   "1_INITIAL_ACCESS",
+    EventCode==4672,                            "2_PRIVILEGE_ESCALATION",
+    EventCode==4769,                            "3_CREDENTIAL_ACCESS",
+    EventCode==1102,                            "4_DEFENSE_EVASION",
+    key=="sudo_exec",                           "5_LINUX_ESCALATION",
+    ja3=="a0e9f5d64349fb13191bc781f81f42e1",   "6_EXFILTRATION",
+    "Unknown"
+  )
+| where phase!="Unknown"
+| eval ts_readable=strftime(ts_utc, "%Y-%m-%dT%H:%M:%SZ")
+| table ts_readable, phase, host, source, _raw
+| sort ts_readable
+
+
+| =========================================================================
+| CHAIN OF CUSTODY
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY COC1: Evidence Source Integrity Validation
+| -------------------------------------------------------------------------
+| Verify that evidence files haven't been modified since acquisition
+| (Compare file hashes against evidence_manifest.json)
+|
+index=_internal source="*evidence_manifest*"
+    OR
+(index=filesystem action=modified path="/forensics/case-NCA-2026-06/raw/*")
+| eval integrity=case(
+    action=="modified" AND modifier!="analyst_ingest_script", "COMPROMISED",
+    action=="read", "OK",
+    "UNKNOWN"
+  )
+| where integrity="COMPROMISED"
+| eval forensic_note="EVIDENCE INTEGRITY BREACH — file modified after acquisition hash recorded"
+| table _time, path, modifier, integrity, forensic_note

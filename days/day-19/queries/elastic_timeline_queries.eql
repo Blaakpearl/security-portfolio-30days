@@ -1,0 +1,126 @@
+// =========================================================================
+// Day 19 — Elastic EQL Forensic Timeline Queries
+// NovaCrest Capital Group | Log Forensics & SIEM
+// Case: NCA-2026-06 | Window: 2026-06-14 08:00Z → 2026-06-18 18:00Z
+// =========================================================================
+// Index pattern: forensic-timeline-nca-2026-*
+// Data ingested via Plaso/log2timeline L2T CSV → Filebeat → Elastic
+// =========================================================================
+
+
+// -------------------------------------------------------------------------
+// QUERY 1: Full Attack Timeline — All Critical Events in Sequence
+// -------------------------------------------------------------------------
+// EQL sequence query reconstructing attack chain across all sources
+// Elastic Security → Detection Rules → Event Correlation
+//
+sequence by host.name with maxspan=5d
+  [process where event.action == "start" and
+   process.parent.name in ("WINWORD.EXE", "EXCEL.EXE") and
+   process.name == "powershell.exe"]         // Initial macro execution
+  [process where process.name == "svc_update.exe"]  // Dropper
+  [any where event.code == "4672" and         // Special privileges
+   winlog.event_data.PrivilegeList : "*SeImpersonate*"]
+  [registry where registry.path :            // UAC bypass
+   "*ms-settings\\shell\\open\\command*"]
+  [network where destination.ip == "198.51.100.99"] // C2 callout
+
+
+// -------------------------------------------------------------------------
+// QUERY 2: Log Clearing Events (Defense Evasion T1070.001)
+// -------------------------------------------------------------------------
+event.code : ("1102" or "104")
+| keep @timestamp, host.name, winlog.event_data.SubjectUserName,
+         winlog.event_data.SubjectDomainName, event.code, message
+| sort @timestamp
+
+
+// -------------------------------------------------------------------------
+// QUERY 3: EventRecord ID Gap Detection
+// -------------------------------------------------------------------------
+// Find gaps in Windows EventRecord sequence within same log
+// (Indicates log tampering / selective deletion)
+//
+sequence by winlog.channel with maxspan=1h
+  [any where true
+   | where winlog.record_id > 0]
+  [any where true
+   | where winlog.record_id - prev_record_id > 100]  // Gap > 100 records
+
+
+// -------------------------------------------------------------------------
+// QUERY 4: Macro Execution → Dropper Chain (T1059.001)
+// -------------------------------------------------------------------------
+sequence by host.name with maxspan=2m
+  [process where process.parent.name : ("WINWORD.EXE","EXCEL.EXE","OUTLOOK.EXE")
+   and process.name : ("powershell.exe","cmd.exe","wscript.exe","cscript.exe")]
+  [process where process.name regex~ "[a-z0-9]{8,}\\.exe"
+   and process.executable : "*\\AppData\\*" or process.executable : "*\\Temp\\*"]
+
+
+// -------------------------------------------------------------------------
+// QUERY 5: LSASS Access from Non-System Process (T1134.001)
+// -------------------------------------------------------------------------
+process where event.type == "start" and
+  process.pe.original_file_name : "lsass.exe" and
+  not process.parent.name in ("wininit.exe", "System")
+| network where destination.process.name == "lsass.exe" and
+  source.process.executable : "*\\Temp\\*"
+
+
+// -------------------------------------------------------------------------
+// QUERY 6: UAC Bypass Chain (T1548.002)
+// -------------------------------------------------------------------------
+sequence by host.name with maxspan=30s
+  [registry where registry.path :
+   "*Software\\Classes\\ms-settings\\shell\\open\\command*"]
+  [process where process.parent.name == "fodhelper.exe" and
+   process.name : ("cmd.exe","powershell.exe")]
+
+
+// -------------------------------------------------------------------------
+// QUERY 7: Kerberoasting Burst (T1558.003)
+// -------------------------------------------------------------------------
+// 3+ RC4 TGS requests within 10 seconds from same source
+//
+sequence by source.ip with maxspan=10s
+  [authentication where event.code == "4769" and
+   winlog.event_data.TicketEncryptionType == "0x17"]
+  [authentication where event.code == "4769" and
+   winlog.event_data.TicketEncryptionType == "0x17"]
+  [authentication where event.code == "4769" and
+   winlog.event_data.TicketEncryptionType == "0x17"]
+
+
+// -------------------------------------------------------------------------
+// QUERY 8: Exfiltration Kill Chain (Staging → Transfer)
+// -------------------------------------------------------------------------
+sequence by host.name with maxspan=2h
+  [process where process.name : ("tar","zip","7z") and
+   process.command_line : ("*/opt/trading*","*/trading*","*bloomberg*")]
+  [network where destination.ip : ("198.51.100.99","52.216.*") and
+   network.bytes > 10000000]
+
+
+// -------------------------------------------------------------------------
+// QUERY 9: AWS Credential Abuse Timeline (T1078.004)
+// -------------------------------------------------------------------------
+// In Elastic with CloudTrail ingested:
+//
+event.dataset == "aws.cloudtrail" and
+event.action in ("GetCallerIdentity","ListBuckets","AssumeRole") and
+not source.ip : ("10.*","172.16.*","192.168.*")
+| keep @timestamp, event.action, aws.cloudtrail.user_identity.arn,
+         source.ip, aws.cloudtrail.aws_region
+| sort @timestamp
+
+
+// -------------------------------------------------------------------------
+// QUERY 10: Clock Skew Reconciliation Check
+// -------------------------------------------------------------------------
+// Flag events where local_timestamp differs significantly from UTC timestamp
+// (Detects misconfigured host clocks — affects evidence reliability)
+//
+any where abs(epoch_time(@timestamp) - epoch_time(event.created)) > 14400
+| keep @timestamp, event.created, host.name, event.code, message
+| sort @timestamp

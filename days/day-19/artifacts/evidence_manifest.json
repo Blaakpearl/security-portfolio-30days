@@ -1,0 +1,199 @@
+{
+  "case_id": "NCA-2026-06",
+  "case_title": "NovaCrest Capital Group — Unauthorized Access & Data Exfiltration",
+  "analyst": "V. Willis, CISSP",
+  "acquisition_date": "2026-06-18T14:00:00Z",
+  "evidence_manifest_created": "2026-06-18T14:45:00Z",
+  "chain_of_custody": [
+    {
+      "date": "2026-06-16T09:00:00Z",
+      "action": "Incident Detected",
+      "actor": "Threat Intelligence Partner (unnamed)",
+      "notes": "Credentials observed on underground forum; IR team notified"
+    },
+    {
+      "date": "2026-06-16T11:30:00Z",
+      "action": "Initial Triage",
+      "actor": "V. Willis, CISSP",
+      "notes": "WS-FIN-04 identified as primary compromised endpoint; network isolated"
+    },
+    {
+      "date": "2026-06-17T08:00:00Z",
+      "action": "Forensic Acquisition — WS-FIN-04",
+      "actor": "V. Willis, CISSP",
+      "method": "FTK Imager v4.7 — Live acquisition; memory dump + disk image",
+      "notes": "Acquisition performed while endpoint isolated from network"
+    },
+    {
+      "date": "2026-06-17T10:30:00Z",
+      "action": "Forensic Acquisition — lnx-trade-01",
+      "actor": "V. Willis, CISSP",
+      "method": "dd + sha256sum — Remote acquisition via read-only SSH",
+      "notes": "Log files copied; full disk image in progress"
+    },
+    {
+      "date": "2026-06-17T14:00:00Z",
+      "action": "Network Log Export",
+      "actor": "V. Willis, CISSP",
+      "method": "Zeek log export via SSH; NGFW proxy log export via admin portal",
+      "notes": "All Zeek logs from tap interface; NGFW logs cover full incident window"
+    },
+    {
+      "date": "2026-06-17T16:00:00Z",
+      "action": "AWS CloudTrail Export",
+      "actor": "V. Willis, CISSP",
+      "method": "AWS CLI: aws cloudtrail lookup-events; S3 log export",
+      "notes": "30-day CloudTrail history exported from novacrest-cloudtrail-logs S3 bucket"
+    },
+    {
+      "date": "2026-06-18T14:00:00Z",
+      "action": "Evidence Hashing & Manifest Creation",
+      "actor": "V. Willis, CISSP",
+      "notes": "SHA256 + MD5 hashes computed for all evidence files; stored in this manifest"
+    }
+  ],
+  "evidence_items": [
+    {
+      "id": "EVT-001",
+      "filename": "Security.evtx",
+      "source_system": "WS-FIN-04",
+      "evidence_type": "Windows Security Event Log",
+      "acquisition_date": "2026-06-17T08:45:00Z",
+      "acquisition_method": "FTK Imager — file copy from live system",
+      "size_bytes": 20971520,
+      "sha256": "a3f1c2d4e5b6a7f8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+      "md5": "d41d8cd98f00b204e9800998ecf8427e",
+      "storage_location": "/forensics/case-NCA-2026-06/raw/Security.evtx",
+      "integrity_verified": true,
+      "notes": "Partial log — Security log cleared by attacker at 15:04 UTC Jun 14. 649 events missing from 13:18–15:04 UTC window.",
+      "tampering_detected": true,
+      "tampering_detail": "Event 1102 (Log Cleared) at 15:04 UTC. RecordID gap: 14201 → 14850 (649 records missing)."
+    },
+    {
+      "id": "EVT-002",
+      "filename": "Sysmon.evtx",
+      "source_system": "WS-FIN-04",
+      "evidence_type": "Sysmon Operational Event Log",
+      "acquisition_date": "2026-06-17T08:46:00Z",
+      "acquisition_method": "FTK Imager — file copy from live system",
+      "size_bytes": 104857600,
+      "sha256": "b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5",
+      "md5": "a87ff679a2f3e71d9181a67b7542122c",
+      "storage_location": "/forensics/case-NCA-2026-06/raw/Sysmon.evtx",
+      "integrity_verified": true,
+      "notes": "Intact — attacker did not clear Sysmon log. Primary source for events in Security.evtx gap window.",
+      "tampering_detected": false,
+      "tampering_detail": null
+    },
+    {
+      "id": "EVT-003",
+      "filename": "System.evtx",
+      "source_system": "WS-FIN-04",
+      "evidence_type": "Windows System Event Log",
+      "acquisition_date": "2026-06-17T08:47:00Z",
+      "acquisition_method": "FTK Imager — file copy from live system",
+      "size_bytes": 2097152,
+      "sha256": "c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+      "md5": "1679091c5a880faf6fb5e6087eb1b2dc",
+      "storage_location": "/forensics/case-NCA-2026-06/raw/System.evtx",
+      "integrity_verified": true,
+      "notes": "Partially cleared — Event 104 (System log cleared) at 15:04:25 UTC. Less impactful as Sysmon covers same period.",
+      "tampering_detected": true,
+      "tampering_detail": "Event 104 detected at 2026-06-14T15:04:25Z."
+    },
+    {
+      "id": "LNX-001",
+      "filename": "audit.log",
+      "source_system": "lnx-trade-01",
+      "evidence_type": "Linux auditd log",
+      "acquisition_date": "2026-06-17T10:45:00Z",
+      "acquisition_method": "Remote copy via read-only SSH to evidence workstation",
+      "size_bytes": 8388608,
+      "sha256": "d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7",
+      "md5": "8f14e45fceea167a5a36dedd4bea2543",
+      "storage_location": "/forensics/case-NCA-2026-06/raw/audit.log",
+      "integrity_verified": true,
+      "notes": "Intact — attacker did not tamper with auditd. Contains full SUID/sudo escalation evidence.",
+      "tampering_detected": false,
+      "tampering_detail": null
+    },
+    {
+      "id": "LNX-002",
+      "filename": "auth.log",
+      "source_system": "lnx-trade-01",
+      "evidence_type": "Linux authentication log",
+      "acquisition_date": "2026-06-17T10:46:00Z",
+      "acquisition_method": "Remote copy via read-only SSH",
+      "size_bytes": 1048576,
+      "sha256": "e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8",
+      "md5": "c9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4",
+      "storage_location": "/forensics/case-NCA-2026-06/raw/auth.log",
+      "integrity_verified": true,
+      "notes": "Intact. Contains sudo session records for svc_ncg.",
+      "tampering_detected": false,
+      "tampering_detail": null
+    },
+    {
+      "id": "NET-001",
+      "filename": "zeek_conn.log",
+      "source_system": "Network tap (hub-side)",
+      "evidence_type": "Zeek connection log (JSON)",
+      "acquisition_date": "2026-06-17T14:15:00Z",
+      "acquisition_method": "Zeek log export from network sensor",
+      "size_bytes": 52428800,
+      "sha256": "f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9",
+      "md5": "d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5",
+      "storage_location": "/forensics/case-NCA-2026-06/raw/zeek_conn.log",
+      "integrity_verified": true,
+      "notes": "Complete. Hub-side capture cannot be tampered by endpoint attacker. Gold standard evidence.",
+      "tampering_detected": false,
+      "tampering_detail": null
+    },
+    {
+      "id": "NET-002",
+      "filename": "zeek_ssl.log",
+      "source_system": "Network tap (hub-side)",
+      "evidence_type": "Zeek TLS/SSL log (JSON)",
+      "acquisition_date": "2026-06-17T14:16:00Z",
+      "acquisition_method": "Zeek log export from network sensor",
+      "size_bytes": 10485760,
+      "sha256": "a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+      "md5": "e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
+      "storage_location": "/forensics/case-NCA-2026-06/raw/zeek_ssl.log",
+      "integrity_verified": true,
+      "notes": "Complete. Contains Cobalt Strike JA3 evidence and S3 exfil destination.",
+      "tampering_detected": false,
+      "tampering_detail": null
+    },
+    {
+      "id": "CLD-001",
+      "filename": "cloudtrail_2026-06.json",
+      "source_system": "AWS CloudTrail (us-east-1)",
+      "evidence_type": "AWS API audit log (JSON)",
+      "acquisition_date": "2026-06-17T16:30:00Z",
+      "acquisition_method": "AWS CLI export from novacrest-cloudtrail-logs S3 bucket",
+      "size_bytes": 15728640,
+      "sha256": "b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1",
+      "md5": "f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7",
+      "storage_location": "/forensics/case-NCA-2026-06/raw/cloudtrail_2026-06.json",
+      "integrity_verified": true,
+      "notes": "Complete. Contains AssumeRole event and all S3/IAM enumeration from external IP.",
+      "tampering_detected": false,
+      "tampering_detail": null
+    }
+  ],
+  "evidence_integrity_summary": {
+    "total_items": 8,
+    "integrity_verified": 8,
+    "tampering_detected_count": 2,
+    "tampered_items": ["EVT-001 (Security.evtx)", "EVT-003 (System.evtx)"],
+    "untampered_primary_evidence": [
+      "EVT-002 Sysmon.evtx — fills Security.evtx gap window",
+      "LNX-001 audit.log — complete Linux escalation evidence",
+      "NET-001 zeek_conn.log — network evidence; endpoint-independent",
+      "NET-002 zeek_ssl.log — exfiltration evidence; endpoint-independent",
+      "CLD-001 cloudtrail — AWS credential abuse; cloud-side; tamper-resistant"
+    ],
+    "forensic_conclusion": "Despite attacker clearing Security.evtx and System.evtx, corroborating evidence from Sysmon.evtx, auditd, Zeek, and CloudTrail reconstructs the complete attack timeline with high confidence. Evidence chain sufficient for legal proceedings."
+  }
+}
