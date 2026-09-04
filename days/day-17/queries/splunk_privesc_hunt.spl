@@ -1,0 +1,322 @@
+| =========================================================================
+| Day 17 — Splunk SPL Hunt Queries: Privilege Escalation
+| NovaCrest Capital Group | Threat Hunt
+| Techniques: T1134, T1134.001, T1548.001, T1548.002, T1548.003, T1558.003
+| =========================================================================
+| Data Sources:
+|   index=sysmon       Sysmon operational events (Windows)
+|   index=wineventlog  Windows Security event log
+|   index=linux_audit  Linux auditd events
+|   index=linux_auth   /var/log/auth.log
+| Hunt Window: 2026-06-14 08:00–18:00 UTC
+| =========================================================================
+
+
+| =========================================================================
+| H1 — TOKEN IMPERSONATION (T1134.001)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H1-A: LSASS Access from Non-System Process (Sysmon Event 10)
+| FIDELITY: High | Alert: Critical
+| -------------------------------------------------------------------------
+| Detects: Non-system, non-AV process opening lsass.exe with read/impersonate access
+|
+index=sysmon EventCode=10
+    TargetImage="*\\lsass.exe"
+| where NOT match(SourceImage, "(?i)(antivirus|defender|crowdstrike|cylance|svchost|services)")
+| eval GrantedAccess_decimal=tonumber(GrantedAccess, 16)
+| eval suspicious_access=if(
+    GrantedAccess_decimal IN (0x1010, 0x1410, 0x0010, 0x1F1FFF, 0x1FFFFF),
+    "YES", "NO"
+  )
+| where suspicious_access="YES"
+| eval attk_technique="T1134.001"
+| eval severity="Critical"
+| table _time, SourceImage, SourceUser, TargetImage, GrantedAccess,
+        suspicious_access, severity, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY H1-B: SeImpersonatePrivilege / SeDebugPrivilege Assigned at Logon
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+| Detects: Special dangerous privileges assigned at logon (Security Event 4672)
+| SeImpersonatePrivilege + standard user = token impersonation possible
+|
+index=wineventlog EventCode=4672
+| where (PrivilegeList LIKE "%SeImpersonatePrivilege%"
+      OR PrivilegeList LIKE "%SeDebugPrivilege%"
+      OR PrivilegeList LIKE "%SeTcbPrivilege%")
+| where NOT (SubjectUserName IN ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE")
+          OR SubjectUserName LIKE "%$")  // Exclude machine accounts
+| eval dangerous_privs=mvfilter(match(mvflatten(split(PrivilegeList,"\n")),
+    "SeImpersonate|SeDebug|SeTcb|SeAssignPrimary|SeCreateToken"))
+| eval attk_technique="T1134.001"
+| table _time, Computer, SubjectUserName, SubjectDomainName,
+        PrivilegeList, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| H2 — SUDO ABUSE (T1548.003)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H2-A: Sudo Execution by Non-Admin User
+| FIDELITY: Medium | Alert: High
+| -------------------------------------------------------------------------
+| Detects: sudo executed by accounts not in the authorised sudoers baseline
+|
+index=linux_audit key=sudo_exec
+| rex field=_raw "uid=(?P<uid>\d+)"
+| rex field=_raw "auid=(?P<auid>\d+)"
+| rex field=_raw "exe=\"(?P<exe>[^\"]+)\""
+| where uid != "0"  // Not already root
+| where NOT auid IN ("1000", "1001")  // Not authorised admin UIDs
+| eval attk_technique="T1548.003"
+| table _time, host, uid, auid, exe, _raw, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY H2-B: NOPASSWD Sudo Rule Detected in /etc/sudoers
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+| Detects: sudoers file containing NOPASSWD — misconfiguration for GTFOBins abuse
+|
+index=linux_audit key=sensitive_file_write
+    (name="/etc/sudoers" OR name LIKE "/etc/sudoers.d/%")
+| eval attk_technique="T1548.003"
+| eval alert="sudoers file modified — check for NOPASSWD rules"
+| table _time, host, uid, name, _raw, alert, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY H2-C: sudo with Shell Escape (GTFOBins Abuse)
+| FIDELITY: Critical | Alert: Critical
+| -------------------------------------------------------------------------
+| Detects: sudo invocation with arguments matching GTFOBins shell escape patterns
+| find -exec /bin/bash, vim -c, python -c os.execl, etc.
+|
+index=linux_audit key=sudo_exec
+| rex field=_raw "EXECVE.*?a0=\"(?P<a0>[^\"]+)\""
+| rex field=_raw "a1=\"(?P<a1>[^\"]+)\""
+| rex field=_raw "a2=\"(?P<a2>[^\"]+)\""
+| eval full_cmd=a0." ".a1." ".a2
+| where match(full_cmd, "(?i)(/bin/bash|/bin/sh|exec|os\.system|pcntl_exec|child_process)")
+| eval attk_technique="T1548.003"
+| eval severity="Critical"
+| eval alert="sudo GTFOBin shell escape pattern detected"
+| table _time, host, full_cmd, severity, alert, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| H3 — SUID/SGID BINARY EXPLOITATION (T1548.001)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H3-A: Execution of Known GTFOBin Binaries with SUID (auditd)
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+| Detects: Known GTFOBins executed where effective UID (euid) differs from real UID (uid)
+| euid=0 + uid!=0 = SUID binary running as root
+|
+index=linux_audit key=suid_exec
+| rex field=_raw "uid=(?P<uid>\d+)"
+| rex field=_raw "euid=(?P<euid>\d+)"
+| rex field=_raw "exe=\"(?P<exe>[^\"]+)\""
+| where euid="0" AND uid!="0"  // SUID escalation pattern
+| eval binary=mvindex(split(exe, "/"), -1)
+| where binary IN (
+    "find","vim","python","python3","perl","ruby","php","nmap","less",
+    "more","awk","nano","cp","tee","dd","curl","wget","node","env",
+    "gdb","ftp","zip","tar","make","bash","sh"
+  )
+| eval attk_technique="T1548.001"
+| eval severity="Critical"
+| eval alert="GTFOBin executed with SUID escalation (euid=0)"
+| table _time, host, exe, uid, euid, severity, alert, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY H3-B: SUID Binary Discovery (Attacker Enumeration Step)
+| FIDELITY: Medium | Alert: Medium
+| -------------------------------------------------------------------------
+| Detects: find command searching for SUID binaries (attacker recon before exploitation)
+|
+index=linux_audit
+| rex field=_raw "PROCTITLE.*?proctitle=\"(?P<cmdline>[^\"]+)\""
+| where match(cmdline, "find.*-perm.*[+-]4000")
+      OR match(cmdline, "find.*-perm.*[+-]2000")
+| eval attk_technique="T1548.001"
+| eval alert="SUID binary enumeration (find -perm -4000)"
+| table _time, host, cmdline, alert, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| H4 — KERBEROASTING (T1558.003)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H4-A: RC4 TGS Requests (Security Event 4769)
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+| Detects: TGS requests with RC4 (0x17) encryption — Kerberoasting indicator
+| Modern environments should use AES (0x12, 0x11); RC4 only if forced
+|
+index=wineventlog EventCode=4769
+    TicketEncryptionType=0x17
+| where NOT (ServiceName LIKE "%$")  // Exclude machine accounts
+| where NOT (ServiceName IN ("krbtgt", "kadmin"))  // Exclude Kerberos admin tickets
+| eval attk_technique="T1558.003"
+| table _time, Computer, TargetUserName, ServiceName,
+        TicketEncryptionType, IpAddress, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY H4-B: Bulk TGS Requests (Kerberoasting Volume Indicator)
+| FIDELITY: Critical | Alert: Critical
+| -------------------------------------------------------------------------
+| Detects: Multiple TGS requests from same source in short window
+| Legitimate use: 1-2 TGS per session. Kerberoasting: 10-100+ in seconds.
+|
+index=wineventlog EventCode=4769
+    TicketEncryptionType=0x17
+| bucket span=60s _time
+| stats count as tgs_count, values(ServiceName) as services_targeted
+    by IpAddress, _time
+| where tgs_count >= 3  // 3+ RC4 TGS in 60 seconds
+| eval attk_technique="T1558.003"
+| eval severity=case(tgs_count>=10,"Critical", tgs_count>=5,"High", "Medium")
+| eval alert="Bulk Kerberoasting: " + tostring(tgs_count) + " RC4 TGS requests in 60s"
+| table _time, IpAddress, tgs_count, services_targeted, severity, alert, attk_technique
+| sort -tgs_count
+
+
+| =========================================================================
+| H5 — UAC BYPASS (T1548.002)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H5-A: UAC Bypass Registry Key Write (ms-settings COM Hijack)
+| FIDELITY: Critical | Alert: Critical
+| -------------------------------------------------------------------------
+| Detects: Write to HKCU\Software\Classes\ms-settings or similar UAC bypass keys
+|
+index=sysmon EventCode=13
+    TargetObject LIKE "*\\Software\\Classes\\ms-settings\\shell\\open\\command*"
+    OR TargetObject LIKE "*\\Software\\Classes\\mscfile\\shell\\open\\command*"
+    OR TargetObject LIKE "*\\Software\\Classes\\exefile\\shell\\open\\command*"
+| eval attk_technique="T1548.002"
+| eval severity="Critical"
+| eval alert="UAC bypass registry key written: " + TargetObject
+| table _time, Computer, User, TargetObject, Details, severity, alert, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY H5-B: Known UAC Bypass Process Spawning Shell
+| FIDELITY: Critical | Alert: Critical
+| -------------------------------------------------------------------------
+| Detects: fodhelper, eventvwr, sdclt spawning cmd.exe or powershell.exe
+| These auto-elevate to High integrity and will execute the hijacked COM key
+|
+index=sysmon EventCode=1
+    (ParentImage LIKE "*\\fodhelper.exe"
+     OR ParentImage LIKE "*\\eventvwr.exe"
+     OR ParentImage LIKE "*\\sdclt.exe"
+     OR ParentImage LIKE "*\\cmstp.exe"
+     OR ParentImage LIKE "*\\mmc.exe")
+    (Image LIKE "*\\cmd.exe"
+     OR Image LIKE "*\\powershell.exe"
+     OR Image LIKE "*\\wscript.exe")
+| eval attk_technique="T1548.002"
+| eval severity="Critical"
+| eval alert="UAC bypass: " + ParentImage + " spawned " + Image + " at " + IntegrityLevel
+| table _time, Computer, User, ParentImage, Image, CommandLine,
+        IntegrityLevel, severity, alert, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY H5-C: Process Elevation Spike (Low→High Integrity Same Session)
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+| Detects: Process running at High integrity from user who was at Medium before
+| Standard users shouldn't have High integrity processes without UAC prompt
+|
+index=sysmon EventCode=1
+    IntegrityLevel="High"
+| where NOT (User LIKE "*\\SYSTEM" OR User LIKE "*\\Administrator")
+| where NOT (Image LIKE "*\\consent.exe")  // Legitimate UAC consent dialog
+| stats count as high_proc_count by User, Computer
+| where high_proc_count >= 2  // Multiple High integrity processes = suspicious
+| eval attk_technique="T1548.002"
+| eval alert="Multiple High-integrity processes from non-admin user"
+| table Computer, User, high_proc_count, alert, attk_technique
+| sort -high_proc_count
+
+
+| =========================================================================
+| H6 — DANGEROUS PRIVILEGE ASSIGNMENT (T1134)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H6-A: Full Dangerous Privilege Inventory at Logon
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+| Detects: Any of 8 dangerous privileges present on standard user logon token
+|
+index=wineventlog EventCode=4672
+| where NOT (SubjectUserName IN ("SYSTEM","LOCAL SERVICE","NETWORK SERVICE")
+          OR SubjectUserName LIKE "%$")
+| eval dangerous=mvfilter(match(mvflatten(split(PrivilegeList,"\n")),
+    "SeDebug|SeImpersonate|SeTcb|SeAssignPrimary|SeCreateToken|SeRestore|SeBackup|SeTakeOwnership"))
+| where mvcount(dangerous) > 0
+| eval attk_technique="T1134"
+| eval severity=case(
+    match(PrivilegeList,"SeTcbPrivilege"), "Critical",
+    match(PrivilegeList,"SeDebugPrivilege"), "High",
+    "Medium"
+  )
+| table _time, Computer, SubjectUserName, dangerous, severity, attk_technique
+| sort -severity
+
+
+| =========================================================================
+| CORRELATION — FULL PRIVESC KILL CHAIN
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CORR-1: Multi-Technique Privilege Escalation Timeline
+| FIDELITY: Critical | Alert: Critical
+| -------------------------------------------------------------------------
+| Correlates events from H1–H6 into a single timeline for one user/host
+| Hunt window: 08:00–18:00 UTC on 2026-06-14
+|
+(index=sysmon (EventCode=10 TargetImage="*lsass*"))
+OR (index=wineventlog EventCode=4672 (PrivilegeList LIKE "*SeImpersonate*" OR PrivilegeList LIKE "*SeDebug*"))
+OR (index=wineventlog EventCode=4769 TicketEncryptionType=0x17)
+OR (index=sysmon EventCode=13 TargetObject LIKE "*ms-settings*")
+OR (index=sysmon EventCode=1 (ParentImage LIKE "*fodhelper*" OR ParentImage LIKE "*eventvwr*"))
+OR (index=linux_audit (key=sudo_exec OR key=suid_exec))
+| eval technique=case(
+    EventCode=10,  "T1134.001 Token Impersonation",
+    EventCode=4672,"T1134 Priv Assignment",
+    EventCode=4769,"T1558.003 Kerberoasting",
+    (EventCode=13 AND match(TargetObject,"ms-settings")), "T1548.002 UAC Bypass Registry",
+    (EventCode=1  AND match(ParentImage,"fodhelper|eventvwr")), "T1548.002 UAC Bypass Exec",
+    key="sudo_exec", "T1548.003 Sudo Abuse",
+    key="suid_exec", "T1548.001 SUID Execution",
+    "Unknown"
+  )
+| eval actor=coalesce(User, SubjectUserName, uid, "unknown")
+| stats count by _time, Computer, actor, technique
+| sort +_time

@@ -1,0 +1,276 @@
+// =========================================================================
+// Day 17 — Sentinel KQL Hunt Queries: Privilege Escalation
+// NovaCrest Capital Group | Threat Hunt
+// Techniques: T1134, T1134.001, T1548.001, T1548.002, T1548.003, T1558.003
+// =========================================================================
+// Data Sources:
+//   WindowsEvent         Sysmon + Windows Security Events
+//   SecurityEvent        Windows Security Log (forwarded)
+//   CommonSecurityLog    Linux auditd (via Syslog connector)
+// Hunt Window: 2026-06-14 08:00–18:00 UTC
+// =========================================================================
+
+let HuntStart = datetime(2026-06-14T08:00:00Z);
+let HuntEnd   = datetime(2026-06-14T18:00:00Z);
+let TargetUser = "j.henderson";
+
+
+// =========================================================================
+// H1 — TOKEN IMPERSONATION (T1134.001)
+// =========================================================================
+
+// H1-A: LSASS Process Access from Non-System Process (Sysmon Event 10)
+// -------------------------------------------------------------------------
+WindowsEvent
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where EventID == 10
+| extend TargetImage  = tostring(EventData.TargetImage)
+| extend SourceImage  = tostring(EventData.SourceImage)
+| extend GrantedAccess = tostring(EventData.GrantedAccess)
+| extend SourceUser   = tostring(EventData.SourceUser)
+| where TargetImage contains "lsass"
+| where not (SourceImage has_any ("antivirus", "Defender", "CrowdStrike",
+                                   "svchost", "services.exe"))
+| where GrantedAccess in ("0x1010", "0x1410", "0x0010", "0x1F1FFF", "0x1FFFFF")
+| extend Technique = "T1134.001"
+| extend Severity = "Critical"
+| project TimeGenerated, Computer, SourceImage, SourceUser,
+          TargetImage, GrantedAccess, Severity, Technique
+
+
+// H1-B: Dangerous Privilege Assignment at Logon (Security Event 4672)
+// -------------------------------------------------------------------------
+SecurityEvent
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where EventID == 4672
+| where PrivilegeList has_any ("SeImpersonatePrivilege", "SeDebugPrivilege", "SeTcbPrivilege")
+| where not (SubjectUserName in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"))
+| where not (SubjectUserName endswith "$")
+| extend Technique = "T1134.001"
+| extend Severity = case(
+    PrivilegeList contains "SeTcbPrivilege", "Critical",
+    PrivilegeList contains "SeDebugPrivilege", "High",
+    "Medium"
+  )
+| project TimeGenerated, Computer, SubjectUserName, SubjectDomainName,
+          PrivilegeList, Severity, Technique
+
+
+// =========================================================================
+// H2 — SUDO ABUSE (T1548.003)
+// =========================================================================
+
+// H2-A: Sudo Execution by Non-Admin User
+// -------------------------------------------------------------------------
+CommonSecurityLog
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where Message contains "key=sudo_exec" or Message contains "sudo"
+| where not (Message contains "uid=0")
+| extend UID = extract(@"uid=(\d+)", 1, Message)
+| where UID !in ("0", "1000", "1001")  // Not root or authorised admins
+| extend Technique = "T1548.003"
+| extend Alert = "Sudo execution by unexpected UID"
+| project TimeGenerated, Computer, UID, Message, Alert, Technique
+
+
+// H2-B: Sudo with GTFOBin Shell Escape
+// -------------------------------------------------------------------------
+CommonSecurityLog
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where Message contains "sudo" and (
+    Message contains "/bin/bash" or Message contains "/bin/sh"
+    or Message contains "exec" or Message contains "os.system"
+    or Message contains "pcntl_exec"
+  )
+| extend Technique = "T1548.003"
+| extend Severity = "Critical"
+| extend Alert = "Sudo GTFOBin shell escape pattern"
+| project TimeGenerated, Computer, Message, Severity, Alert, Technique
+
+
+// H2-C: NOPASSWD Rule Written to Sudoers
+// -------------------------------------------------------------------------
+CommonSecurityLog
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where Message contains "key=sensitive_file_write"
+    and (Message contains "/etc/sudoers" or Message contains "/etc/sudoers.d/")
+| extend Technique = "T1548.003"
+| extend Alert = "sudoers file modified — review for NOPASSWD"
+| project TimeGenerated, Computer, Message, Alert, Technique
+
+
+// =========================================================================
+// H3 — SUID/SGID BINARY EXPLOITATION (T1548.001)
+// =========================================================================
+
+// H3-A: GTFOBin Executed with SUID (euid=0 by non-root)
+// -------------------------------------------------------------------------
+let GTFOBins = dynamic(["find","vim","python","python3","perl","ruby","php",
+                          "nmap","less","more","awk","nano","cp","tee","dd",
+                          "curl","wget","node","env","gdb","ftp","zip","tar"]);
+CommonSecurityLog
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where Message contains "key=suid_exec"
+| extend EXE  = extract(@'exe="([^"]+)"', 1, Message)
+| extend UID  = extract(@"uid=(\d+)", 1, Message)
+| extend EUID = extract(@"euid=(\d+)", 1, Message)
+| extend BinName = tostring(split(EXE, "/")[-1])
+| where EUID == "0" and UID != "0"
+| where BinName in (GTFOBins)
+| extend Technique = "T1548.001"
+| extend Severity = "Critical"
+| extend Alert = strcat("GTFOBin SUID execution: ", EXE, " (euid=0)")
+| project TimeGenerated, Computer, EXE, UID, EUID, BinName, Severity, Alert, Technique
+
+
+// H3-B: SUID Enumeration (find -perm -4000)
+// -------------------------------------------------------------------------
+CommonSecurityLog
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where Message matches regex @"find.*-perm.*[+-]4000"
+      or Message matches regex @"find.*-perm.*[+-]2000"
+| extend Technique = "T1548.001"
+| extend Alert = "SUID binary enumeration (attacker recon before exploitation)"
+| project TimeGenerated, Computer, Message, Alert, Technique
+
+
+// =========================================================================
+// H4 — KERBEROASTING (T1558.003)
+// =========================================================================
+
+// H4-A: RC4 TGS Requests from Single Source
+// -------------------------------------------------------------------------
+SecurityEvent
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where EventID == 4769
+| extend TicketEncryptionType = tostring(TicketEncryptionType)
+| where TicketEncryptionType == "0x17"  // RC4 — Kerberoasting
+| where not (ServiceName endswith "$")
+| where not (ServiceName in ("krbtgt", "kadmin"))
+| extend Technique = "T1558.003"
+| project TimeGenerated, Computer, TargetUserName, ServiceName,
+          TicketEncryptionType, IpAddress, Technique
+
+
+// H4-B: Bulk Kerberoasting (Volume Anomaly)
+// -------------------------------------------------------------------------
+SecurityEvent
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where EventID == 4769 and TicketEncryptionType == "0x17"
+| where not (ServiceName endswith "$")
+| summarize TGSCount = count(), Services = makeset(ServiceName)
+    by IpAddress, bin(TimeGenerated, 1m)
+| where TGSCount >= 3
+| extend Technique = "T1558.003"
+| extend Severity = case(TGSCount >= 10, "Critical", TGSCount >= 5, "High", "Medium")
+| extend Alert = strcat("Bulk Kerberoasting: ", TGSCount, " RC4 TGS in 60s from ", IpAddress)
+| project TimeGenerated, IpAddress, TGSCount, Services, Severity, Alert, Technique
+
+
+// =========================================================================
+// H5 — UAC BYPASS (T1548.002)
+// =========================================================================
+
+// H5-A: UAC Bypass Registry Key Write
+// -------------------------------------------------------------------------
+WindowsEvent
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where EventID == 13
+| extend TargetObject = tostring(EventData.TargetObject)
+| extend Details = tostring(EventData.Details)
+| extend User = tostring(EventData.User)
+| where TargetObject has_any (
+    @"Software\Classes\ms-settings\shell\open\command",
+    @"Software\Classes\mscfile\shell\open\command",
+    @"Software\Classes\exefile\shell\open\command",
+    @"Software\Classes\CLSID\{3ad05575"  // DelegateExecute CLSID
+  )
+| extend Technique = "T1548.002"
+| extend Severity = "Critical"
+| extend Alert = strcat("UAC bypass registry key: ", TargetObject)
+| project TimeGenerated, Computer, User, TargetObject, Details, Severity, Alert, Technique
+
+
+// H5-B: Known UAC Bypass Binary Spawning Shell
+// -------------------------------------------------------------------------
+WindowsEvent
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where EventID == 1
+| extend ParentImage = tostring(EventData.ParentImage)
+| extend Image = tostring(EventData.Image)
+| extend CommandLine = tostring(EventData.CommandLine)
+| extend IntegrityLevel = tostring(EventData.IntegrityLevel)
+| extend User = tostring(EventData.User)
+| where ParentImage has_any ("fodhelper.exe","eventvwr.exe","sdclt.exe","cmstp.exe")
+| where Image has_any ("cmd.exe","powershell.exe","wscript.exe","mshta.exe")
+| extend Technique = "T1548.002"
+| extend Severity = "Critical"
+| extend Alert = strcat("UAC bypass: ", ParentImage, " spawned ", Image,
+                        " at integrity=", IntegrityLevel)
+| project TimeGenerated, Computer, User, ParentImage, Image,
+          CommandLine, IntegrityLevel, Severity, Alert, Technique
+
+
+// =========================================================================
+// H6 — DANGEROUS PRIVILEGE ASSIGNMENT (T1134)
+// =========================================================================
+
+// H6-A: Dangerous Privilege Set on Standard User Token
+// -------------------------------------------------------------------------
+SecurityEvent
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where EventID == 4672
+| where not (SubjectUserName in ("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE"))
+| where not (SubjectUserName endswith "$")
+| extend DangerousPrivs = case(
+    PrivilegeList contains "SeTcbPrivilege",       "SeTcbPrivilege (act as OS)",
+    PrivilegeList contains "SeCreateTokenPrivilege","SeCreateTokenPrivilege (forge tokens)",
+    PrivilegeList contains "SeAssignPrimaryToken",  "SeAssignPrimaryToken",
+    PrivilegeList contains "SeDebugPrivilege",       "SeDebugPrivilege (debug/inject any proc)",
+    PrivilegeList contains "SeImpersonatePrivilege", "SeImpersonatePrivilege (token impersonation)",
+    ""
+  )
+| where isnotempty(DangerousPrivs)
+| extend Technique = "T1134"
+| extend Severity = case(
+    DangerousPrivs contains "SeTcb", "Critical",
+    DangerousPrivs contains "SeCreateToken", "Critical",
+    "High"
+  )
+| project TimeGenerated, Computer, SubjectUserName, SubjectDomainName,
+          DangerousPrivs, Severity, Technique
+
+
+// =========================================================================
+// CORRELATION — FULL PRIVESC KILL CHAIN
+// =========================================================================
+
+// CORR-1: Multi-Technique Escalation Chain for Target User
+// -------------------------------------------------------------------------
+let TokenImpersonation = WindowsEvent
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where EventID == 10 and tostring(EventData.TargetImage) contains "lsass"
+    | extend Actor = tostring(EventData.SourceUser), Tech = "T1134.001"
+    | project TimeGenerated, Computer, Actor, Tech, Evidence = tostring(EventData.SourceImage);
+
+let KerbRoasting = SecurityEvent
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where EventID == 4769 and TicketEncryptionType == "0x17"
+    | extend Actor = tostring(TargetUserName), Tech = "T1558.003"
+    | project TimeGenerated, Computer, Actor, Tech, Evidence = tostring(ServiceName);
+
+let UACBypass = WindowsEvent
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where EventID == 1 and tostring(EventData.ParentImage) has_any ("fodhelper","eventvwr")
+    | extend Actor = tostring(EventData.User), Tech = "T1548.002"
+    | project TimeGenerated, Computer, Actor, Tech, Evidence = tostring(EventData.Image);
+
+let SudoAbuse = CommonSecurityLog
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where Message contains "key=sudo_exec"
+    | extend Actor = extract(@"uid=(\d+)", 1, Message), Tech = "T1548.003"
+    | project TimeGenerated, Computer, Actor, Tech, Evidence = Message;
+
+union TokenImpersonation, KerbRoasting, UACBypass, SudoAbuse
+| sort by TimeGenerated asc
+| project TimeGenerated, Computer, Actor, Tech, Evidence
