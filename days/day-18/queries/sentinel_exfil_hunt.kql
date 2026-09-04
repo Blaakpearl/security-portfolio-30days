@@ -1,0 +1,261 @@
+// =========================================================================
+// Day 18 — Sentinel KQL Hunt Queries: Data Exfiltration Patterns
+// NovaCrest Capital Group | Threat Hunt
+// Techniques: T1041, T1048.001, T1048.002, T1560.001, T1567.002, T1029, T1030
+// =========================================================================
+// Data Sources:
+//   ZeekDNS           Custom table from Zeek dns.log ingestion
+//   ZeekConn          Custom table from Zeek conn.log ingestion
+//   ZeekSSL           Custom table from Zeek ssl.log ingestion
+//   ZeekFiles         Custom table from Zeek files.log ingestion
+//   CommonSecurityLog Proxy / DLP events
+//   SecurityEvent     Windows events (Sysmon + Security)
+// =========================================================================
+
+let HuntStart = datetime(2026-06-14T10:00:00Z);
+let HuntEnd   = datetime(2026-06-15T06:00:00Z);
+let EscalationTime = datetime(2026-06-14T09:15:00Z);
+let CompromisedHosts = dynamic(["10.0.1.40", "10.0.2.50"]);  // WS-FIN-04, lnx-trade-01
+let CloudDomains = dynamic(["s3.amazonaws.com","amazonaws.com",
+    "blob.core.windows.net","dropbox.com","mega.nz","wetransfer.com",
+    "onedrive.live.com","sharepoint.com"]);
+let KnownC2JA3 = dynamic(["a0e9f5d64349fb13191bc781f81f42e1",
+    "51c64c77e60f3980eea90869b68c58a8","6734f37431670b3ab4292b8f60f29984",
+    "c12f54a3f91dc7bafd92cb59fe009a35"]);
+
+
+// =========================================================================
+// H1 — DNS TUNNELING (T1048.001)
+// =========================================================================
+
+// H1-A: Long DNS Query Names (> 60 chars)
+// -------------------------------------------------------------------------
+ZeekDNS
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| extend QueryLen = strlen(Query)
+| extend Subdomain = tostring(split(Query, ".")[0])
+| extend SubLen = strlen(Subdomain)
+| where QueryLen > 60 and SubLen > 40
+| extend Technique = "T1048.001"
+| extend Alert = strcat("Long DNS query (", QueryLen, " chars) — possible tunnel payload")
+| project TimeGenerated, SrcIP, Query, QueryLen, SubLen, QType, Alert, Technique
+| sort by QueryLen desc
+
+
+// H1-B: TXT/NULL DNS Records from Internal Hosts
+// -------------------------------------------------------------------------
+ZeekDNS
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where QType in ("TXT", "NULL")
+| where not (Query contains "_dmarc" or Query contains "_domainkey" or Query contains "spf")
+| where ipv4_is_private(SrcIP)
+| summarize QueryCount = count() by SrcIP, QType, ApexDomain = extract(@"[^.]+\.[^.]+$", 0, Query)
+| where QueryCount >= 3
+| extend Technique = "T1048.001"
+| extend Severity = "Critical"
+| extend Alert = strcat("Internal host making ", QType, " DNS queries (DNS tunnel indicator)")
+| project SrcIP, QType, ApexDomain, QueryCount, Severity, Alert, Technique
+
+
+// H1-C: Burst DNS Queries to Single Apex Domain
+// -------------------------------------------------------------------------
+ZeekDNS
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| extend ApexDomain = extract(@"[^.]+\.[^.]+$", 0, Query)
+| summarize QueryCount = count(), RecordTypes = makeset(QType)
+    by SrcIP, ApexDomain, bin(TimeGenerated, 5m)
+| where QueryCount >= 10
+| where not (ApexDomain has_any ("microsoft.com","google.com","windows.com",
+                                  "office.com","azure.com","novacrest.com"))
+| extend Technique = "T1048.001"
+| extend Alert = strcat("DNS burst: ", QueryCount, " queries to ", ApexDomain, " in 5 min")
+| project TimeGenerated, SrcIP, ApexDomain, QueryCount, RecordTypes, Alert, Technique
+| sort by QueryCount desc
+
+
+// =========================================================================
+// H2 — HTTPS / ENCRYPTED EXFILTRATION (T1048.002)
+// =========================================================================
+
+// H2-A: Known C2 JA3 Fingerprints
+// -------------------------------------------------------------------------
+ZeekSSL
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where JA3 in (KnownC2JA3)
+| extend Technique = "T1048.002"
+| extend Severity = "Critical"
+| extend Alert = strcat("C2 JA3 fingerprint detected: ", JA3, " → ", ServerName)
+| project TimeGenerated, SrcIP, ServerName, JA3, ValidationStatus, Severity, Alert, Technique
+| sort by TimeGenerated desc
+
+
+// H2-B: Self-Signed Certificate with High Egress Volume
+// -------------------------------------------------------------------------
+let SelfSigned = ZeekSSL
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where ValidationStatus has "self signed"
+    | project TimeGenerated, SrcIP, ServerName, ValidationStatus;
+let HighEgress = ZeekConn
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where ipv4_is_private(SrcIP) and not ipv4_is_private(DstIP)
+    | summarize TotalBytesMB = sum(OrigBytes) / 1048576.0 by SrcIP
+    | where TotalBytesMB > 5;
+SelfSigned
+| join kind=inner (HighEgress) on SrcIP
+| extend Technique = "T1048.002"
+| extend Alert = strcat("Self-signed cert + ", round(TotalBytesMB, 1), " MB egress")
+| project TimeGenerated, SrcIP, ServerName, TotalBytesMB, Alert, Technique
+
+
+// =========================================================================
+// H3 — DATA STAGING / ARCHIVING (T1560.001)
+// =========================================================================
+
+// H3-A: Large Archive Files in Zeek files.log
+// -------------------------------------------------------------------------
+ZeekFiles
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where MimeType in ("application/x-gzip","application/gzip","application/zip",
+                      "application/x-tar","application/x-7z-compressed")
+| extend SizeMB = TotalBytes / 1048576.0
+| where SizeMB > 10
+| extend Technique = "T1560.001"
+| extend Severity = iif(SizeMB > 50, "Critical", "High")
+| extend Alert = strcat("Large archive: ", FileName, " (", round(SizeMB, 1), " MB)")
+| project TimeGenerated, TxHosts, RxHosts, FileName, MimeType, SizeMB, Severity, Alert, Technique
+| sort by SizeMB desc
+
+
+// H3-B: Archive Utility Execution by Compromised Account
+// -------------------------------------------------------------------------
+SecurityEvent
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where EventID == 4688
+| where NewProcessName has_any ("tar", "zip", "7z", "rar", "gzip")
+| where SubjectUserName has_any ("j.henderson", "svc_ncg")
+| extend Technique = "T1560.001"
+| extend Alert = "Archive utility run by compromised account"
+| project TimeGenerated, Computer, SubjectUserName, NewProcessName, CommandLine, Alert, Technique
+
+
+// =========================================================================
+// H4 — CLOUD STORAGE EXFILTRATION (T1567.002)
+// =========================================================================
+
+// H4-A: Connection to Cloud Storage Provider
+// -------------------------------------------------------------------------
+ZeekSSL
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where ServerName has_any (CloudDomains)
+| extend Technique = "T1567.002"
+| extend Alert = strcat("Cloud storage connection: ", ServerName)
+| project TimeGenerated, SrcIP, ServerName, Alert, Technique
+
+
+// H4-B: Large Upload to Cloud Storage (bytes context)
+// -------------------------------------------------------------------------
+let CloudConns = ZeekSSL
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where ServerName has_any (CloudDomains)
+    | project TimeGenerated, SrcIP, DstIP, ServerName;
+let LargeEgress = ZeekConn
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where OrigBytes > 1000000
+    | project TimeGenerated, SrcIP, DstIP, OrigBytes;
+CloudConns
+| join kind=inner (LargeEgress) on SrcIP, DstIP
+| extend UploadMB = OrigBytes / 1048576.0
+| extend Technique = "T1567.002"
+| extend Severity = "Critical"
+| extend Alert = strcat("Large upload to ", ServerName, ": ", round(UploadMB, 1), " MB")
+| project TimeGenerated, SrcIP, ServerName, UploadMB, Severity, Alert, Technique
+| sort by UploadMB desc
+
+
+// =========================================================================
+// H5 — VOLUMETRIC ANOMALY (T1030)
+// =========================================================================
+
+// H5-A: Total External Egress per Host (Hunt Window)
+// -------------------------------------------------------------------------
+ZeekConn
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where ipv4_is_private(SrcIP) and not ipv4_is_private(DstIP)
+| summarize TotalEgressMB = sum(OrigBytes) / 1048576.0, UniqueDests = dcount(DstIP)
+    by SrcIP
+| where TotalEgressMB > 100
+| extend Technique = "T1030"
+| extend Alert = strcat(SrcIP, " sent ", round(TotalEgressMB, 1), " MB externally in hunt window")
+| project SrcIP, TotalEgressMB, UniqueDests, Alert, Technique
+| sort by TotalEgressMB desc
+
+
+// H5-B: Egress Spike — Compare to Prior 24h
+// -------------------------------------------------------------------------
+let CurrentWindow = ZeekConn
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where ipv4_is_private(SrcIP) and not ipv4_is_private(DstIP)
+    | summarize CurrentMB = sum(OrigBytes) / 1048576.0 by SrcIP;
+let PriorWindow = ZeekConn
+    | where TimeGenerated between (ago(48h) .. HuntStart)
+    | where ipv4_is_private(SrcIP) and not ipv4_is_private(DstIP)
+    | summarize PriorMB = sum(OrigBytes) / 1048576.0 by SrcIP;
+CurrentWindow
+| join kind=leftouter (PriorWindow) on SrcIP
+| extend PriorMB = coalesce(PriorMB, 1.0)
+| extend MultiplierIncrease = CurrentMB / PriorMB
+| where MultiplierIncrease > 5
+| extend Technique = "T1030"
+| extend Alert = strcat(SrcIP, ": ", round(MultiplierIncrease, 0), "x egress increase vs prior 24h")
+| project SrcIP, CurrentMB, PriorMB, MultiplierIncrease, Alert, Technique
+| sort by MultiplierIncrease desc
+
+
+// =========================================================================
+// H6 — SCHEDULED / AUTOMATED EXFILTRATION (T1029)
+// =========================================================================
+
+// H6-A: Recurring Large Transfers to Same External Destination
+// -------------------------------------------------------------------------
+ZeekConn
+| where TimeGenerated between (HuntStart .. HuntEnd)
+| where OrigBytes > 1000000 and not ipv4_is_private(DstIP)
+| summarize TransferCount = count(), TotalMB = sum(OrigBytes) / 1048576.0,
+            FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated)
+    by SrcIP, DstIP
+| where TransferCount >= 3
+| extend SpanMinutes = datetime_diff('minute', LastSeen, FirstSeen)
+| extend AvgIntervalMin = SpanMinutes / TransferCount
+| extend Technique = "T1029"
+| extend Alert = strcat("Recurring transfers: ", SrcIP, " → ", DstIP,
+                        " (", TransferCount, " transfers, avg ", AvgIntervalMin, " min interval)")
+| project SrcIP, DstIP, TransferCount, TotalMB, AvgIntervalMin, Alert, Technique
+| sort by TransferCount desc
+
+
+// =========================================================================
+// CORRELATION — FULL EXFIL KILL CHAIN
+// =========================================================================
+
+// CORR-1: Escalation → Staging → Exfiltration Timeline
+// -------------------------------------------------------------------------
+let EscalationEvents = SecurityEvent
+    | where TimeGenerated between (EscalationTime .. HuntStart)
+    | where EventID == 4672 and PrivilegeList contains "SeImpersonate"
+    | project Phase = "1_ESCALATION", TimeGenerated, Actor = SubjectUserName,
+              Detail = PrivilegeList, Computer;
+let StagingEvents = ZeekFiles
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where MimeType in ("application/x-gzip","application/zip","application/x-tar")
+    | where TotalBytes > 1000000
+    | project Phase = "2_STAGING", TimeGenerated, Actor = tostring(TxHosts),
+              Detail = strcat(FileName, " (", TotalBytes/1048576, " MB)"), Computer = "";
+let ExfilEvents = ZeekConn
+    | where TimeGenerated between (HuntStart .. HuntEnd)
+    | where OrigBytes > 10000000 and not ipv4_is_private(DstIP)
+    | project Phase = "3_EXFIL", TimeGenerated, Actor = SrcIP,
+              Detail = strcat(round(OrigBytes/1048576.0, 1), " MB → ", DstIP), Computer = "";
+union EscalationEvents, StagingEvents, ExfilEvents
+| sort by TimeGenerated asc
+| extend ATTCKChain = "T1134 → T1560.001 → T1048/T1567"
+| project TimeGenerated, Phase, Actor, Detail, Computer, ATTCKChain

@@ -1,0 +1,308 @@
+| =========================================================================
+| Day 18 — Splunk SPL Hunt Queries: Data Exfiltration Patterns
+| NovaCrest Capital Group | Threat Hunt
+| Techniques: T1041, T1048.001, T1048.002, T1560.001, T1567.002, T1029, T1030
+| =========================================================================
+| Data Sources:
+|   index=zeek_dns      Zeek dns.log (JSON)
+|   index=zeek_conn     Zeek conn.log (JSON)
+|   index=zeek_ssl      Zeek ssl.log (JSON)
+|   index=zeek_files    Zeek files.log (JSON)
+|   index=proxy         NGFW / Proxy egress logs
+|   index=dlp           Microsoft Purview / DLP alerts
+| Hunt Window: 2026-06-14 10:00 – 2026-06-15 06:00 UTC
+| =========================================================================
+
+
+| =========================================================================
+| H1 — DNS TUNNELING (T1048.001)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H1-A: Long DNS Queries (> 60 chars) — Payload in Query Name
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+index=zeek_dns earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+| eval query_len=len(query)
+| where query_len > 60
+| eval subdomain=mvindex(split(query, "."), 0)
+| eval sub_len=len(subdomain)
+| where sub_len > 40
+| eval attk_technique="T1048.001"
+| eval alert="Long DNS query — possible DNS tunnel payload in name"
+| table _time, "id.orig_h", query, query_len, sub_len, qtype_name, alert, attk_technique
+| sort -query_len
+
+
+| -------------------------------------------------------------------------
+| QUERY H1-B: TXT/NULL Record Type Queries from Internal Hosts
+| FIDELITY: High | Alert: Critical
+| -------------------------------------------------------------------------
+| TXT and NULL record queries from workstations are extremely rare
+| legitimately; primary use case is DNS tunneling
+|
+index=zeek_dns earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+    (qtype_name="TXT" OR qtype_name="NULL")
+| where NOT (query LIKE "*_dmarc*"
+          OR query LIKE "*_domainkey*"
+          OR query LIKE "*spf*")  // Exclude legit TXT types
+| where cidrmatch("10.0.0.0/8", "id.orig_h")  // Internal source only
+| stats count by "id.orig_h", qtype_name
+| where count >= 3
+| eval attk_technique="T1048.001"
+| eval severity="Critical"
+| eval alert="Internal host making " + qtype_name + " DNS queries (DNS tunnel indicator)"
+| table "id.orig_h", qtype_name, count, severity, alert, attk_technique
+| sort -count
+
+
+| -------------------------------------------------------------------------
+| QUERY H1-C: Burst DNS Queries to Single Domain (High Rate)
+| FIDELITY: Critical | Alert: Critical
+| -------------------------------------------------------------------------
+index=zeek_dns earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+| eval apex=mvjoin(mvrange(mvcount(split(query,"."))-2, mvcount(split(query,"."))), ".")
+| rex field=query "(?:[^.]+\.)*(?P<apex>[^.]+\.[^.]+)$"
+| bucket span=5m _time
+| stats count by "id.orig_h", apex, _time
+| where count >= 10
+| where NOT apex IN ("microsoft.com", "google.com", "windows.com",
+                     "office.com", "azure.com", "novacrest.com")
+| eval attk_technique="T1048.001"
+| eval alert="Burst DNS to " + apex + ": " + tostring(count) + " queries in 5 min"
+| table _time, "id.orig_h", apex, count, alert, attk_technique
+| sort -count
+
+
+| =========================================================================
+| H2 — HTTPS / ENCRYPTED CHANNEL EXFILTRATION (T1048.002)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H2-A: Known C2 JA3 Fingerprints in TLS Connections
+| FIDELITY: Critical | Alert: Critical
+| -------------------------------------------------------------------------
+index=zeek_ssl earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+| where ja3 IN (
+    "a0e9f5d64349fb13191bc781f81f42e1",  /* Cobalt Strike */
+    "51c64c77e60f3980eea90869b68c58a8",  /* Metasploit    */
+    "6734f37431670b3ab4292b8f60f29984",  /* Sliver C2     */
+    "c12f54a3f91dc7bafd92cb59fe009a35",  /* Brute Ratel   */
+    "b386946a5a44d1ddcc843bc75336dfce"   /* Nighthawk     */
+  )
+| eval attk_technique="T1048.002"
+| eval severity="Critical"
+| eval alert="Known C2 JA3 fingerprint: " + ja3 + " on " + server_name
+| table _time, "id.orig_h", server_name, ja3, validation_status,
+        severity, alert, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY H2-B: Self-Signed or Invalid Certificate on High-Byte Connection
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+index=zeek_ssl earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+    (validation_status="self signed certificate" OR validation_status="unable to get issuer")
+| join type=inner "id.orig_h" [
+    search index=zeek_conn earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+    | where orig_bytes > 1000000
+    | stats sum(orig_bytes) as total_bytes by "id.orig_h"
+    | eval total_mb=round(total_bytes/1048576, 1)
+  ]
+| where total_mb > 5
+| eval attk_technique="T1048.002"
+| eval alert="Self-signed cert + large egress (" + tostring(total_mb) + " MB)"
+| table _time, "id.orig_h", server_name, validation_status, total_mb, alert, attk_technique
+| sort -total_mb
+
+
+| =========================================================================
+| H3 — DATA STAGING / ARCHIVING (T1560.001)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H3-A: Large Archive Files Created or Transferred (Zeek files.log)
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+index=zeek_files earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+    (mime_type="application/x-gzip" OR mime_type="application/gzip"
+     OR mime_type="application/zip" OR mime_type="application/x-tar"
+     OR mime_type="application/x-7z-compressed")
+| eval size_mb=round(total_bytes/1048576, 1)
+| where size_mb > 10
+| eval attk_technique="T1560.001"
+| eval severity=if(size_mb > 50, "Critical", "High")
+| eval alert="Large archive transfer: " + filename + " (" + tostring(size_mb) + " MB)"
+| table _time, tx_hosts, rx_hosts, filename, mime_type, size_mb,
+        severity, alert, attk_technique
+| sort -size_mb
+
+
+| -------------------------------------------------------------------------
+| QUERY H3-B: Archive Utility Execution (Sysmon / auditd)
+| FIDELITY: Medium | Alert: Medium
+| -------------------------------------------------------------------------
+| Detects: tar, zip, 7z, rar invocations on compromised host
+| Preceded by data collection = staging indicator
+|
+index=sysmon OR index=linux_audit
+    EventCode=1
+    (Image LIKE "*\\tar.exe" OR Image LIKE "*\\7z.exe" OR Image LIKE "*\\zip.exe"
+     OR exe="/usr/bin/tar" OR exe="/usr/bin/zip" OR exe="/usr/bin/7z"
+     OR exe="/usr/bin/gzip")
+| where User IN ("ncg\\j.henderson", "svc_ncg")  // Compromised accounts
+| eval attk_technique="T1560.001"
+| eval alert="Archive utility run by compromised account"
+| table _time, host, User, Image, CommandLine, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| H4 — CLOUD STORAGE EXFILTRATION (T1567.002)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H4-A: Data Upload to Cloud Storage Providers
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+index=zeek_ssl OR index=proxy
+    earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+    (server_name LIKE "*.s3.amazonaws.com"
+     OR server_name LIKE "*.blob.core.windows.net"
+     OR server_name LIKE "*dropbox.com"
+     OR server_name LIKE "*onedrive.live.com"
+     OR server_name LIKE "*mega.nz"
+     OR server_name LIKE "*wetransfer.com")
+| join type=left server_name [
+    search index=zeek_conn
+    | stats sum(orig_bytes) as bytes_out by "id.resp_h"
+    | eval mb_out=round(bytes_out/1048576, 1)
+  ]
+| eval attk_technique="T1567.002"
+| eval alert="Upload to cloud storage: " + server_name + " (" + tostring(mb_out) + " MB)"
+| table _time, "id.orig_h", server_name, mb_out, alert, attk_technique
+| sort -mb_out
+
+
+| -------------------------------------------------------------------------
+| QUERY H4-B: DLP Alert — Sensitive Content Upload
+| FIDELITY: Critical | Alert: Critical
+| -------------------------------------------------------------------------
+index=dlp earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+    (PolicyName LIKE "*Financial*" OR PolicyName LIKE "*Trading*" OR
+     SensitiveInformationType LIKE "*Bank Account*")
+| eval attk_technique="T1567.002"
+| eval severity="Critical"
+| table _time, UserName, DocumentName, PolicyName,
+        SensitiveInformationType, severity, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| H5 — VOLUMETRIC ANOMALY (T1030)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H5-A: Egress Bytes Anomaly vs. 30-Day Baseline
+| FIDELITY: High | Alert: Critical
+| -------------------------------------------------------------------------
+| Compare current egress to baseline; alert on > 3σ deviation
+|
+index=zeek_conn earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+| where cidrmatch("10.0.0.0/8", "id.orig_h")
+    AND NOT cidrmatch("10.0.0.0/8", "id.resp_h")  // External destination
+| stats sum(orig_bytes) as total_egress_bytes by "id.orig_h"
+| eval total_egress_mb=round(total_egress_bytes/1048576, 1)
+| where total_egress_mb > 100  // > 100 MB: well above normal endpoint baseline
+| eval attk_technique="T1030"
+| eval alert="Egress anomaly: " + "id.orig_h" + " sent " + tostring(total_egress_mb) + " MB"
+| table "id.orig_h", total_egress_mb, alert, attk_technique
+| sort -total_egress_mb
+
+
+| -------------------------------------------------------------------------
+| QUERY H5-B: Top Talker Hosts by External Egress (Hunt Pivot)
+| FIDELITY: Medium | Alert: Informational
+| -------------------------------------------------------------------------
+index=zeek_conn earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+| where cidrmatch("10.0.0.0/8", "id.orig_h")
+    AND NOT cidrmatch("10.0.0.0/8", "id.resp_h")
+| stats sum(orig_bytes) as out_bytes, dc("id.resp_h") as unique_dsts
+    by "id.orig_h"
+| eval out_mb=round(out_bytes/1048576, 1)
+| eval attk_technique="T1030"
+| table "id.orig_h", out_mb, unique_dsts, attk_technique
+| sort -out_mb
+| head 20
+
+
+| =========================================================================
+| H6 — SCHEDULED / AUTOMATED EXFILTRATION (T1029)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY H6-A: Periodic Large Transfer to Same External Destination
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+index=zeek_conn earliest="2026-06-14T10:00:00" latest="2026-06-15T06:00:00"
+| where orig_bytes > 1000000  // > 1 MB transfers only
+| where NOT cidrmatch("10.0.0.0/8", "id.resp_h")
+| bin _time span=30m
+| stats count as transfer_count, sum(orig_bytes) as total_bytes
+    by "id.orig_h", "id.resp_h", _time
+| where transfer_count >= 2  // Multiple large transfers in 30-min windows
+| streamstats count as window_num by "id.orig_h", "id.resp_h"
+| where window_num >= 2  // Recurring across multiple windows
+| eval total_mb=round(total_bytes/1048576, 1)
+| eval attk_technique="T1029"
+| eval alert="Periodic large transfers: " + "id.orig_h" + " → " + "id.resp_h"
+| table _time, "id.orig_h", "id.resp_h", transfer_count, total_mb, alert, attk_technique
+| sort -total_mb
+
+
+| -------------------------------------------------------------------------
+| QUERY H6-B: Scheduled Task or Cron Created Post-Escalation
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+| Correlates: cron/task created AFTER Day 17 escalation (09:15 UTC)
+|
+(index=sysmon EventCode=12
+    TargetObject LIKE "*Tasks*"
+    earliest="2026-06-14T09:15:00" latest="2026-06-15T06:00:00")
+OR
+(index=linux_audit key=cron_write
+    earliest="2026-06-14T09:15:00" latest="2026-06-15T06:00:00")
+| where User IN ("ncg\\j.henderson", "svc_ncg") OR uid="1002"
+| eval attk_technique="T1029"
+| eval alert="Cron/Task created post-escalation by compromised account"
+| table _time, host, User, _raw, alert, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| CORRELATION — FULL EXFIL KILL CHAIN
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CORR-1: Staging → Archive → Transfer Chain
+| FIDELITY: Critical | Alert: Critical
+| -------------------------------------------------------------------------
+(index=linux_audit key=suid_exec OR key=sudo_exec
+ earliest="2026-06-14T09:00:00" latest="2026-06-14T10:30:00")
+| eval phase="ESCALATION"
+| append [
+    search index=linux_audit exe="/usr/bin/tar" OR exe="/usr/bin/zip"
+    earliest="2026-06-14T10:00:00" latest="2026-06-14T11:30:00"
+    | eval phase="STAGING"
+  ]
+| append [
+    search index=zeek_conn orig_bytes>10000000
+    earliest="2026-06-14T10:30:00" latest="2026-06-15T06:00:00"
+    | where NOT cidrmatch("10.0.0.0/8","id.resp_h")
+    | eval phase="EXFIL"
+  ]
+| stats count by phase
+| eval attk_chain="T1548 (Escalation) → T1560.001 (Staging) → T1048/T1567 (Exfil)"
+| eval confidence="Critical — full exfil kill chain confirmed"
+| table phase, count, attk_chain, confidence
