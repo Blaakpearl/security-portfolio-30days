@@ -1,0 +1,238 @@
+| =========================================================================
+| Day 20 — Splunk SPL: C2 Detection Queries (All 4 Variants + Timing)
+| NovaCrest Capital Group | Purple Team Exercise
+| Techniques: T1071.001, T1573.002, T1090.004, T1008, T1001.001
+| =========================================================================
+| Indexes:
+|   index=zeek_ssl      Zeek ssl.log (JA3, SNI, cert validation)
+|   index=zeek_conn     Zeek conn.log (timing, bytes, duration)
+|   index=zeek_dns      Zeek dns.log (DoH detection)
+|   index=zeek_http     Zeek http.log (domain fronting — after TLS inspection)
+|   index=edr           EDR behavioral events
+|   index=proxy         Zscaler / NGFW proxy logs
+| =========================================================================
+
+
+| =========================================================================
+| VARIANT 1 — SLIVER BASELINE: Known JA3 Fingerprint
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY B-1A: Known C2 JA3 Fingerprint Detection
+| FIDELITY: Critical | Alert: Immediate
+| -------------------------------------------------------------------------
+index=zeek_ssl
+    ja3 IN (
+        "a0e9f5d64349fb13191bc781f81f42e1",
+        "f4febc55ea12b31ae17cfb7e614afda8",
+        "51c64c77e60f3980eea90869b68c58a8",
+        "6734f37431670b3ab4292b8f60f29984",
+        "c12f54a3f91dc7bafd92cb59fe009a35"
+    )
+| eval c2_framework=case(
+    ja3="a0e9f5d64349fb13191bc781f81f42e1", "Sliver",
+    ja3="f4febc55ea12b31ae17cfb7e614afda8", "Havoc",
+    ja3="51c64c77e60f3980eea90869b68c58a8", "Metasploit",
+    ja3="6734f37431670b3ab4292b8f60f29984", "Sliver (alt)",
+    ja3="c12f54a3f91dc7bafd92cb59fe009a35", "Brute Ratel",
+    "Unknown C2"
+  )
+| eval attk_technique="T1071.001,T1573.002"
+| eval severity="Critical"
+| table _time, "id.orig_h", "id.resp_h", server_name, ja3,
+        c2_framework, validation_status, severity, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY B-1B: New/Uncategorized Domain with Repeated HTTPS Connections
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+index=proxy action=allowed
+| where domain_age_days < 30
+    AND NOT server_name LIKE "*.microsoft.com"
+    AND NOT server_name LIKE "*.novacrest.com"
+    AND NOT server_name LIKE "*.office.com"
+| stats count by "id.orig_h", server_name, domain_age_days
+| where count >= 3
+| eval attk_technique="T1071.001"
+| eval alert="New domain (" + tostring(domain_age_days) + " days old) with " + tostring(count) + " connections"
+| table "id.orig_h", server_name, domain_age_days, count, alert, attk_technique
+| sort -count
+
+
+| =========================================================================
+| VARIANT 2 — JITTER: Statistical Beacon Timing Detection
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY B-2A: Coefficient of Variation on Connection Inter-Arrival Times
+| FIDELITY: High | Alert: High (requires aggregation)
+| -------------------------------------------------------------------------
+index=zeek_conn proto=tcp "id.resp_p"=443
+    NOT cidrmatch("10.0.0.0/8", "id.resp_h")
+| sort _time
+| delta _time as iat by "id.orig_h" "id.resp_h"
+| where iat > 0 AND iat < 7200  // IAT between 0s and 2hr
+| stats count as conn_count,
+        avg(iat) as mean_iat,
+        stdev(iat) as std_iat,
+        avg(orig_bytes) as mean_bytes
+        by "id.orig_h", "id.resp_h", "id.resp_p"
+| where conn_count >= 5
+| eval iat_cv=std_iat / mean_iat
+| where iat_cv < 0.40
+    AND mean_iat >= 30
+    AND mean_iat <= 1800
+| eval attk_technique="T1071.001,T1001.001"
+| eval confidence=case(
+    iat_cv < 0.10, "High — regular beacon pattern",
+    iat_cv < 0.25, "Medium — likely beacon with low jitter",
+    "Low — possible beacon with high jitter"
+  )
+| table "id.orig_h", "id.resp_h", conn_count,
+        round(mean_iat,0) as mean_iat_sec,
+        round(iat_cv,3), confidence, attk_technique
+| sort iat_cv
+
+
+| -------------------------------------------------------------------------
+| QUERY B-2B: Beacon Payload Size Consistency
+| FIDELITY: Medium | Alert: Medium
+| -------------------------------------------------------------------------
+index=zeek_conn proto=tcp "id.resp_p"=443
+    NOT cidrmatch("10.0.0.0/8", "id.resp_h")
+| where orig_bytes > 500 AND orig_bytes < 50000
+| stats count as conn_count,
+        avg(orig_bytes) as mean_bytes,
+        stdev(orig_bytes) as std_bytes
+        by "id.orig_h", "id.resp_h"
+| where conn_count >= 5
+| eval bytes_cv=std_bytes / mean_bytes
+| where bytes_cv < 0.20
+| eval attk_technique="T1071.001"
+| eval alert="Consistent payload size (CV=" + tostring(round(bytes_cv,3)) + ") — possible beacon"
+| table "id.orig_h", "id.resp_h", conn_count,
+        round(mean_bytes,0) as mean_bytes, round(bytes_cv,3), alert, attk_technique
+| sort bytes_cv
+
+
+| =========================================================================
+| VARIANT 3 — DOMAIN FRONTING: Host Header ≠ SNI
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY B-3A: Domain Fronting — SNI vs Host Header Mismatch
+| FIDELITY: Critical | Alert: Critical (requires TLS inspection)
+| -------------------------------------------------------------------------
+index=zeek_http
+    "http.host" != "" AND "server_name" != ""
+| where 'http.host' != 'server_name'
+    AND NOT ('http.host' LIKE "%azureedge.net"
+           AND 'server_name' LIKE "%azureedge.net")
+| eval attk_technique="T1090.004"
+| eval severity="Critical"
+| eval alert="Domain fronting: SNI=" + server_name + " Host=" + 'http.host'
+| table _time, "id.orig_h", "id.resp_h", server_name, "http.host",
+        severity, alert, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY B-3B: Azure CDN Lookalike SNI (Typosquatting / Abuse)
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+index=zeek_ssl
+    server_name LIKE "*azureedge*"
+    OR server_name LIKE "*akamai-novacrest*"
+    OR server_name LIKE "*cloudfront-novacrest*"
+| where NOT server_name LIKE "*.novacrest.com"
+| eval attk_technique="T1090.004,T1102"
+| eval alert="CDN lookalike SNI — possible domain fronting setup"
+| table _time, "id.orig_h", server_name, ja3, alert, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| VARIANT 4 — DNS-OVER-HTTPS: DoH Bypass Detection
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY B-4A: DNS-over-HTTPS to External Resolvers
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+index=zeek_ssl
+    (("id.resp_h"="1.1.1.1" AND "id.resp_p"=443)
+  OR ("id.resp_h"="8.8.8.8" AND "id.resp_p"=443)
+  OR ("id.resp_h"="9.9.9.9" AND "id.resp_p"=443))
+    (server_name LIKE "*cloudflare-dns*"
+  OR server_name LIKE "*dns.google*"
+  OR server_name LIKE "*doh*")
+| eval attk_technique="T1071.004,T1008"
+| eval alert="DoH to external resolver " + "id.resp_h" + " — DNS monitoring bypassed"
+| table _time, "id.orig_h", "id.resp_h", "id.resp_p",
+        server_name, alert, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY B-4B: JARM Fingerprint for Havoc C2
+| FIDELITY: High | Alert: High
+| -------------------------------------------------------------------------
+index=zeek_ssl
+    jarm IN (
+        "1dd28f00000000000043d43d000000ba86b6e5f1c028a5c19b35dd9e71a15c",
+        "2ad2ad16d2ad2ad22c2ad2ad2ad2ade1a3ed4e7d7b6bd1c1b8fa9c0dcfd2b9"
+    )
+| eval c2_framework=case(
+    jarm="1dd28f00000000000043d43d000000ba86b6e5f1c028a5c19b35dd9e71a15c",
+    "Sliver (JARM match)",
+    jarm="2ad2ad16d2ad2ad22c2ad2ad2ad2ade1a3ed4e7d7b6bd1c1b8fa9c0dcfd2b9",
+    "Havoc (JARM match)",
+    "Unknown"
+  )
+| eval attk_technique="T1071.001,T1573.002"
+| table _time, "id.orig_h", "id.resp_h", server_name, jarm,
+        c2_framework, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| CROSS-VARIANT: COMBINED C2 DETECTION + SLA TRACKING
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY B-5: Full C2 Detection Dashboard — All Variants, SLA Status
+| FIDELITY: Mixed | Alert: Per-variant severity
+| -------------------------------------------------------------------------
+(index=zeek_ssl
+    (ja3="a0e9f5d64349fb13191bc781f81f42e1"
+  OR ja3="f4febc55ea12b31ae17cfb7e614afda8")
+  | eval detection_method="JA3 Fingerprint"
+  | eval c2_variant="V1 or V2 (Sliver)")
+
+UNION
+
+(index=zeek_http
+    'http.host' != server_name
+  | eval detection_method="Domain Fronting — Host≠SNI"
+  | eval c2_variant="V3 (Fronting)")
+
+UNION
+
+(index=zeek_ssl
+    ("id.resp_h"="1.1.1.1" AND "id.resp_p"=443)
+  | eval detection_method="DoH External Resolver"
+  | eval c2_variant="V4 (Havoc DoH)")
+
+| eval sla_minutes=round((_time - min(_time)) / 60, 1)
+| eval sla_status=case(
+    sla_minutes <= 5,  "V1 SLA MET (≤5 min)",
+    sla_minutes <= 15, "V2 SLA MET (≤15 min)",
+    sla_minutes <= 20, "V3 SLA MET (≤20 min)",
+    sla_minutes <= 25, "V4 SLA MET (≤25 min)",
+    "SLA MISSED"
+  )
+| table _time, "id.orig_h", c2_variant, detection_method,
+        sla_minutes, sla_status
+| sort _time

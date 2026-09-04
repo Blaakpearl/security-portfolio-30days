@@ -1,0 +1,178 @@
+// =========================================================================
+// Day 20 — Sentinel KQL: C2 Detection Queries
+// NovaCrest Capital Group | Purple Team Exercise
+// Techniques: T1071.001, T1573.002, T1090.004, T1008, T1001.001
+// =========================================================================
+// Tables: ZeekSSL, ZeekConn, ZeekDNS, ZeekHTTP (custom Zeek tables)
+// =========================================================================
+
+let KnownC2JA3 = dynamic([
+    "a0e9f5d64349fb13191bc781f81f42e1",  // Sliver
+    "f4febc55ea12b31ae17cfb7e614afda8",  // Havoc
+    "51c64c77e60f3980eea90869b68c58a8",  // Metasploit
+    "6734f37431670b3ab4292b8f60f29984",  // Sliver alt
+    "c12f54a3f91dc7bafd92cb59fe009a35"   // Brute Ratel
+]);
+let SliverJARM = "1dd28f00000000000043d43d000000ba86b6e5f1c028a5c19b35dd9e71a15c";
+let HavocJARM  = "2ad2ad16d2ad2ad22c2ad2ad2ad2ade1a3ed4e7d7b6bd1c1b8fa9c0dcfd2b9";
+let ExerciseStart = datetime(2026-06-20T09:00:00Z);
+let ExerciseEnd   = datetime(2026-06-20T13:00:00Z);
+
+
+// =========================================================================
+// VARIANT 1 — Known JA3 Fingerprint
+// =========================================================================
+
+// KQL-B-1A: Known C2 JA3 Fingerprint
+// -------------------------------------------------------------------------
+ZeekSSL
+| where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+| where JA3 in (KnownC2JA3)
+| extend C2Framework = case(
+    JA3 == "a0e9f5d64349fb13191bc781f81f42e1", "Sliver",
+    JA3 == "f4febc55ea12b31ae17cfb7e614afda8", "Havoc",
+    JA3 == "51c64c77e60f3980eea90869b68c58a8", "Metasploit",
+    JA3 == "6734f37431670b3ab4292b8f60f29984", "Sliver (alt)",
+    "Unknown"
+  )
+| extend Technique = "T1071.001,T1573.002"
+| extend Severity = "Critical"
+| project TimeGenerated, SrcIP, DstIP, ServerName, JA3, C2Framework, Severity, Technique
+| sort by TimeGenerated asc
+
+
+// KQL-B-1B: JARM Fingerprint for Sliver/Havoc
+// -------------------------------------------------------------------------
+ZeekSSL
+| where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+| where JARM in (SliverJARM, HavocJARM)
+| extend C2Framework = iif(JARM == SliverJARM, "Sliver (JARM)", "Havoc (JARM)")
+| extend Technique = "T1573.002"
+| project TimeGenerated, SrcIP, DstIP, ServerName, JARM, C2Framework, Technique
+| sort by TimeGenerated asc
+
+
+// =========================================================================
+// VARIANT 2 — Jitter: Beacon Timing Analysis
+// =========================================================================
+
+// KQL-B-2A: Coefficient of Variation on Inter-Arrival Times
+// -------------------------------------------------------------------------
+ZeekConn
+| where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+| where DstPort == 443 and not ipv4_is_private(DstIP)
+| order by SrcIP, DstIP, TimeGenerated asc
+| serialize
+| extend PrevTime = prev(TimeGenerated, 1, datetime(null)), PrevDst = prev(DstIP)
+| extend IAT = iif(PrevDst == DstIP, datetime_diff('second', TimeGenerated, PrevTime), long(null))
+| where isnotnull(IAT) and IAT > 0 and IAT < 7200
+| summarize
+    ConnCount = count(),
+    MeanIAT   = avg(IAT),
+    StdIAT    = stdev(IAT),
+    MeanBytes = avg(OrigBytes)
+    by SrcIP, DstIP, DstPort
+| where ConnCount >= 5 and MeanIAT >= 30 and MeanIAT <= 1800
+| extend IAT_CV = StdIAT / MeanIAT
+| where IAT_CV < 0.40
+| extend Confidence = case(
+    IAT_CV < 0.10, "High — regular beacon",
+    IAT_CV < 0.25, "Medium — beacon with jitter",
+    "Low — possible beacon"
+  )
+| extend Technique = "T1071.001,T1001.001"
+| project SrcIP, DstIP, ConnCount, MeanIATSec = round(MeanIAT, 0),
+          IAT_CV = round(IAT_CV, 3), Confidence, Technique
+| sort by IAT_CV asc
+
+
+// =========================================================================
+// VARIANT 3 — Domain Fronting
+// =========================================================================
+
+// KQL-B-3A: Host Header ≠ SNI (Requires TLS Inspection)
+// -------------------------------------------------------------------------
+ZeekHTTP
+| where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+| where isnotempty(VirtualHost) and isnotempty(ServerName)
+| where VirtualHost != ServerName
+| where not (VirtualHost endswith ".azureedge.net" and ServerName endswith ".azureedge.net")
+| extend Technique = "T1090.004"
+| extend Severity = "Critical"
+| extend Alert = strcat("Domain fronting: SNI=", ServerName, " Host=", VirtualHost)
+| project TimeGenerated, SrcIP, DstIP, ServerName, VirtualHost, Severity, Alert, Technique
+| sort by TimeGenerated desc
+
+
+// KQL-B-3B: CDN Lookalike Domain Detection
+// -------------------------------------------------------------------------
+ZeekSSL
+| where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+| where ServerName contains "azureedge" or ServerName contains "cloudfront"
+| where not (ServerName endswith ".novacrest.com"
+          or ServerName endswith ".microsoft.com")
+| extend Technique = "T1090.004,T1102"
+| extend Alert = strcat("CDN lookalike SNI: ", ServerName)
+| project TimeGenerated, SrcIP, DstIP, ServerName, JA3, Alert, Technique
+| sort by TimeGenerated desc
+
+
+// =========================================================================
+// VARIANT 4 — DNS-over-HTTPS / Havoc
+// =========================================================================
+
+// KQL-B-4A: DoH to External Resolvers
+// -------------------------------------------------------------------------
+ZeekSSL
+| where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+| where DstPort == 443
+| where DstIP in ("1.1.1.1", "8.8.8.8", "9.9.9.9", "208.67.222.222")
+| where ServerName contains_cs "dns" or ServerName contains_cs "doh" or
+        ServerName contains_cs "cloudflare"
+| extend Technique = "T1071.004,T1008"
+| extend Alert = strcat("DoH to external resolver ", DstIP, " — DNS bypass")
+| project TimeGenerated, SrcIP, DstIP, DstPort, ServerName, Alert, Technique
+| sort by TimeGenerated desc
+
+
+// =========================================================================
+// CROSS-VARIANT: SLA SCORECARD
+// =========================================================================
+
+// KQL-B-5: Exercise SLA Performance Dashboard
+// -------------------------------------------------------------------------
+let V1_JA3 = ZeekSSL
+    | where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+    | where JA3 in (KnownC2JA3)
+    | summarize FirstDetected = min(TimeGenerated)
+    | extend Variant = "V1 (JA3)", SLA_Minutes = 5.0;
+let V2_Timing = ZeekConn
+    | where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+    | where DstPort == 443 and not ipv4_is_private(DstIP)
+    | summarize ConnCount = count(), MinTime = min(TimeGenerated) by SrcIP, DstIP
+    | where ConnCount >= 5
+    | summarize FirstDetected = min(MinTime)
+    | extend Variant = "V2 (Timing)", SLA_Minutes = 15.0;
+let V3_Front = ZeekHTTP
+    | where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+    | where VirtualHost != ServerName and isnotempty(VirtualHost)
+    | summarize FirstDetected = min(TimeGenerated)
+    | extend Variant = "V3 (Fronting)", SLA_Minutes = 20.0;
+let V4_DoH = ZeekSSL
+    | where TimeGenerated between (ExerciseStart .. ExerciseEnd)
+    | where DstIP in ("1.1.1.1", "8.8.8.8") and DstPort == 443
+    | summarize FirstDetected = min(TimeGenerated)
+    | extend Variant = "V4 (DoH)", SLA_Minutes = 25.0;
+union V1_JA3, V2_Timing, V3_Front, V4_DoH
+| extend DeployedAt = ExerciseStart + (case(
+    Variant == "V1 (JA3)",      totimespan("0m"),
+    Variant == "V2 (Timing)",   totimespan("30m"),
+    Variant == "V3 (Fronting)", totimespan("75m"),
+    Variant == "V4 (DoH)",      totimespan("120m"),
+    totimespan("0m")
+  ))
+| extend MTTD_Min = datetime_diff('minute', FirstDetected, DeployedAt)
+| extend SLA_Status = iif(MTTD_Min <= SLA_Minutes, "✅ SLA MET", "❌ SLA MISSED")
+| extend Score = iif(MTTD_Min <= SLA_Minutes, 3, iif(MTTD_Min <= 60, 1, 0))
+| project Variant, MTTD_Min, SLA_Minutes, SLA_Status, Score, FirstDetected
+| sort by Variant asc

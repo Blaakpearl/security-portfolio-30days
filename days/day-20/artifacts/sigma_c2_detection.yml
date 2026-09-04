@@ -1,0 +1,304 @@
+title: C2 Beacon — Sliver/Havoc Known JA3 Fingerprint
+id: d4e5f6a7-b8c9-d0e1-f2a3-b4c5d6e7f8a9
+status: stable
+description: |
+    Detects known C2 framework JA3 fingerprints in TLS connections.
+    Covers Sliver, Havoc, Metasploit, Cobalt Strike, and Brute Ratel.
+    High-fidelity — known-bad JA3s have very low false-positive rate.
+author: V. Willis, CISSP — NovaCrest Purple Team
+date: 2026-06-20
+references:
+    - https://github.com/BishopFox/sliver
+    - https://github.com/HavocFramework/Havoc
+    - https://engineering.salesforce.com/tls-fingerprinting-with-ja3-and-ja3s-247362855967
+tags:
+    - attack.command_and_control
+    - attack.t1071.001
+    - attack.t1573.002
+logsource:
+    product: zeek
+    service: ssl
+detection:
+    selection:
+        ja3|contains:
+            - 'a0e9f5d64349fb13191bc781f81f42e1'  # Sliver C2
+            - 'f4febc55ea12b31ae17cfb7e614afda8'  # Havoc C2
+            - '51c64c77e60f3980eea90869b68c58a8'  # Metasploit
+            - '6734f37431670b3ab4292b8f60f29984'  # Sliver (alternate)
+            - 'c12f54a3f91dc7bafd92cb59fe009a35'  # Brute Ratel
+            - 'b386946a5a44d1ddcc843bc75336dfce'  # Nighthawk
+    condition: selection
+fields:
+    - ts
+    - id.orig_h
+    - id.resp_h
+    - server_name
+    - ja3
+    - jarm
+    - validation_status
+falsepositives:
+    - Security testing tools used by internal red team
+    - Authorized penetration testing with pre-disclosed JA3
+level: critical
+---
+title: C2 Beacon — New/Uncategorized Domain HTTPS Connection
+id: e5f6a7b8-c9d0-e1f2-a3b4-c5d6e7f8a9b0
+status: stable
+description: |
+    Detects HTTPS connections to domains registered within the last 30 days
+    with low global prevalence. New domains are a strong C2 indicator.
+    Combine with connection count threshold to reduce FP rate.
+author: V. Willis, CISSP — NovaCrest Purple Team
+date: 2026-06-20
+references:
+    - https://attack.mitre.org/techniques/T1071/001/
+tags:
+    - attack.command_and_control
+    - attack.t1071.001
+logsource:
+    product: zeek
+    service: ssl
+detection:
+    selection:
+        domain_age_days|lt: 30
+    filter_legit:
+        server_name|contains:
+            - '.microsoft.com'
+            - '.windows.com'
+            - '.office.com'
+            - '.azure.com'
+            - '.novacrest.com'
+    timeframe: 10m
+    condition: selection and not filter_legit
+    | count() by id.orig_h, server_name > 3
+fields:
+    - ts
+    - id.orig_h
+    - server_name
+    - ja3
+    - domain_age_days
+falsepositives:
+    - New legitimate SaaS services (inform IT before alerting)
+    - CDN cache endpoints with short TTL domains
+level: high
+---
+title: C2 Beacon — Domain Fronting (SNI ≠ Host Header)
+id: f6a7b8c9-d0e1-f2a3-b4c5-d6e7f8a9b0c1
+status: stable
+description: |
+    Detects domain fronting where the TLS SNI (outer) differs from the HTTP
+    Host header (inner). Domain fronting hides the true C2 destination behind
+    a legitimate CDN. Requires TLS inspection (Zscaler, Palo Alto) to detect.
+author: V. Willis, CISSP — NovaCrest Purple Team
+date: 2026-06-20
+references:
+    - https://attack.mitre.org/techniques/T1090/004/
+    - https://www.bitsight.com/blog/domain-fronting-explained
+tags:
+    - attack.command_and_control
+    - attack.t1090.004
+    - attack.t1573.002
+logsource:
+    product: zeek
+    service: http
+detection:
+    selection:
+        # After TLS inspection: http.log has both Host and server_name
+        # Domain fronting: host (inner) ≠ server_name (SNI, outer)
+        'http.virtual_host|not_contains':
+            - '%server_name%'
+    filter_legit:
+        # Some legitimate CDN configurations use different inner/outer
+        http.virtual_host|endswith:
+            - '.azureedge.net'
+            - '.cloudfront.net'
+            - '.akamaiedge.net'
+        # Only flag if inner Host is NOT a known corporate domain
+        http.virtual_host|not_contains:
+            - 'novacrest'
+            - 'microsoft'
+            - 'office'
+    condition: selection and not filter_legit
+fields:
+    - ts
+    - id.orig_h
+    - id.resp_h
+    - server_name
+    - http.virtual_host
+    - ja3
+falsepositives:
+    - Misconfigured CDN reverse proxy configurations
+    - Legitimate multi-tenant CDN applications
+    - Require: TLS inspection must be enabled to populate Host header in http.log
+level: critical
+---
+title: C2 Beacon — DNS-over-HTTPS to External Resolver (DoH Bypass)
+id: a7b8c9d0-e1f2-a3b4-c5d6-e7f8a9b0c1d2
+status: stable
+description: |
+    Detects DNS-over-HTTPS (DoH) traffic to external resolvers. DoH bypasses
+    traditional DNS monitoring and is used by C2 frameworks (Havoc) as a
+    fallback channel. Corporate endpoints should only use internal resolvers.
+author: V. Willis, CISSP — NovaCrest Purple Team
+date: 2026-06-20
+references:
+    - https://attack.mitre.org/techniques/T1071/004/
+    - https://attack.mitre.org/techniques/T1008/
+tags:
+    - attack.command_and_control
+    - attack.t1071.004
+    - attack.t1008
+logsource:
+    product: zeek
+    service: ssl
+detection:
+    selection_cloudflare:
+        id.resp_h: '1.1.1.1'
+        id.resp_p: 443
+        server_name|contains: 'cloudflare-dns'
+    selection_google:
+        id.resp_h: '8.8.8.8'
+        id.resp_p: 443
+        server_name|contains: 'dns.google'
+    selection_quad9:
+        id.resp_h: '9.9.9.9'
+        id.resp_p: 443
+    condition: 1 of selection_*
+fields:
+    - ts
+    - id.orig_h
+    - id.resp_h
+    - id.resp_p
+    - server_name
+    - ja3
+falsepositives:
+    - Browsers with built-in DoH enabled (Chrome, Firefox DoH feature)
+    - Authorized DoH client software
+    - Recommend: Block DoH to external resolvers at NGFW and monitor for bypass
+level: high
+---
+title: C2 Beacon — Statistical Beacon Timing Pattern (Periodic Connections)
+id: b8c9d0e1-f2a3-b4c5-d6e7-f8a9b0c1d2e3
+status: experimental
+description: |
+    Detects statistically periodic connections to the same external IP,
+    indicative of C2 beaconing. Uses coefficient of variation (CV) on
+    inter-arrival times. Low CV with high connection count = beacon.
+    Works even with jitter when standard threshold is applied.
+    Requires: Zeek conn.log with timestamps + SIEM aggregation capability.
+author: V. Willis, CISSP — NovaCrest Purple Team
+date: 2026-06-20
+references:
+    - https://www.cobaltstrike.com/blog/signal-noise-hunting-for-beaconing
+    - https://github.com/corelight/zeek-beacon-detection
+tags:
+    - attack.command_and_control
+    - attack.t1071.001
+    - attack.t1001.001
+logsource:
+    product: zeek
+    service: conn
+detection:
+    # This rule requires SIEM-side aggregation — not simple field matching
+    # Implement via Splunk SPL or KQL (see query files)
+    # Pseudo-logic:
+    #   1. Group connections by (src_ip, dst_ip, dst_port)
+    #   2. Calculate IAT (inter-arrival times) between connections
+    #   3. Calculate CV of IATs: CV = stddev(IATs) / mean(IATs)
+    #   4. Alert if: connection_count > 8 AND CV < 0.35 AND mean_IAT between 30–1800s
+    selection:
+        proto: 'tcp'
+        id.resp_p:
+            - 443
+            - 80
+            - 8080
+        id.resp_h|not_startswith:
+            - '10.'
+            - '172.16.'
+            - '192.168.'
+    condition: selection
+    # Real logic applied in SIEM aggregation — see splunk_c2_detection.spl Query B-5
+fields:
+    - ts
+    - id.orig_h
+    - id.resp_h
+    - id.resp_p
+    - orig_bytes
+    - resp_bytes
+    - duration
+falsepositives:
+    - Cloud sync services (Dropbox, OneDrive) with predictable sync intervals
+    - Monitoring agents with fixed polling intervals
+    - Tune: add allowlist for known-good periodic connection destinations
+level: high
+---
+title: C2 Beacon — Self-Signed Certificate on Outbound HTTPS Connection
+id: c9d0e1f2-a3b4-c5d6-e7f8-a9b0c1d2e3f4
+status: stable
+description: |
+    Detects outbound HTTPS connections where the server certificate failed
+    validation (self-signed, expired, or revoked). Legitimate business
+    services use valid CA-signed certificates. Self-signed = C2 infrastructure.
+    Best deployed in conjunction with TLS inspection.
+author: V. Willis, CISSP — NovaCrest Purple Team
+date: 2026-06-20
+tags:
+    - attack.command_and_control
+    - attack.t1573.002
+logsource:
+    product: zeek
+    service: ssl
+detection:
+    selection:
+        validation_status:
+            - 'self signed certificate'
+            - 'self signed certificate in certificate chain'
+            - 'unable to get local issuer certificate'
+            - 'certificate has expired'
+    filter_legit:
+        # Internal services with self-signed certs (pre-approved)
+        server_name|contains:
+            - '.novacrest.internal'
+            - '.corp.novacrest.com'
+    condition: selection and not filter_legit
+fields:
+    - ts
+    - id.orig_h
+    - id.resp_h
+    - server_name
+    - validation_status
+    - ja3
+falsepositives:
+    - Internal development environments accessed from production
+    - Home lab connections (if personal devices on corporate network)
+    - Lab testing environments
+level: medium
+---
+title: C2 Beacon — Outbound HTTPS Consistent Payload Pattern
+id: d0e1f2a3-b4c5-d6e7-f8a9-b0c1d2e3f4a5
+status: experimental
+description: |
+    Detects connections to the same external IP with unusually consistent
+    payload sizes across multiple connections. C2 beacons have predictable
+    payload sizes (checkin packet + response). Requires aggregation logic.
+author: V. Willis, CISSP — NovaCrest Purple Team
+date: 2026-06-20
+tags:
+    - attack.command_and_control
+    - attack.t1071.001
+logsource:
+    product: zeek
+    service: conn
+detection:
+    # SIEM-side aggregation required (see SPL Query B-4)
+    # Alert if: same dst_ip, bytes_cv < 0.20, count > 8
+    selection:
+        proto: 'tcp'
+        id.resp_p: 443
+        orig_bytes|gt: 500
+        orig_bytes|lt: 50000
+    condition: selection
+falsepositives:
+    - Regular API polling with fixed-size payloads
+    - Software update check-in services
+level: medium
