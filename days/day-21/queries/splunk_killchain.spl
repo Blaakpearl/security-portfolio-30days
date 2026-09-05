@@ -1,0 +1,303 @@
+| =========================================================================
+| Day 21 — Splunk SPL: Full Kill Chain Dashboard
+| NovaCrest Capital Group | Week 3 Capstone
+| All 8 ATT&CK phases + SLA scorecard + MTTD visualization
+| =========================================================================
+| Indexes: wineventlog, sysmon, linux_audit, zeek_*, proxy, cloudtrail
+| Exercise window: 2026-06-21 09:00–15:00 UTC
+| =========================================================================
+
+| =========================================================================
+| PHASE 1 — RECONNAISSANCE (Passive; External)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| P1: GitHub Credential Reuse Attempt
+| -------------------------------------------------------------------------
+index=cloudtrail OR index=proxy
+    earliest="2026-06-21T09:00:00" latest="2026-06-21T09:30:00"
+    (sourceIPAddress="198.51.100.99" OR sourceIPAddress="198.51.100.50")
+| eval phase="P1_Recon"
+| eval technique="T1589"
+| table _time, sourceIPAddress, eventName, userAgent, phase, technique
+
+
+| =========================================================================
+| PHASE 2 — INITIAL ACCESS
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| P2-A: Office Macro → PowerShell Child Process (T1566.001, T1059.001)
+| -------------------------------------------------------------------------
+index=sysmon EventCode=1
+    earliest="2026-06-21T09:30:00" latest="2026-06-21T10:15:00"
+    (ParentImage LIKE "%WINWORD.EXE"
+  OR ParentImage LIKE "%EXCEL.EXE"
+  OR ParentImage LIKE "%OUTLOOK.EXE")
+    (Image LIKE "%powershell.exe"
+  OR Image LIKE "%cmd.exe"
+  OR Image LIKE "%wscript.exe")
+| eval phase="P2_InitialAccess"
+| eval technique="T1566.001,T1059.001"
+| eval ts_utc=_time + 14400
+| table ts_utc, host, ParentImage, Image, CommandLine, phase, technique
+| sort ts_utc
+
+
+| -------------------------------------------------------------------------
+| P2-B: Sliver C2 First Beacon (JA3 Fingerprint)
+| -------------------------------------------------------------------------
+index=zeek_ssl
+    earliest="2026-06-21T09:30:00" latest="2026-06-21T10:15:00"
+    ja3="a0e9f5d64349fb13191bc781f81f42e1"
+| eval phase="P2_InitialAccess"
+| eval technique="T1071.001"
+| eval detection_method="JA3 fingerprint"
+| table _time, "id.orig_h", "id.resp_h", server_name, ja3,
+        detection_method, phase, technique
+| sort _time
+
+
+| =========================================================================
+| PHASE 3 — EXECUTION & PERSISTENCE
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| P3-A: Scheduled Task Creation (Event 4698)
+| -------------------------------------------------------------------------
+index=wineventlog EventCode=4698
+    earliest="2026-06-21T10:15:00" latest="2026-06-21T11:00:00"
+| eval phase="P3_Persistence"
+| eval technique="T1053.005"
+| rex field=_raw "TaskName\">(?P<task_name>[^<]+)"
+| eval suspicious=if(
+    like(task_name, "%Sys%") OR like(task_name, "%Update%") OR like(task_name, "%Check%"),
+    "YES", "NO"
+  )
+| table _time, host, user, task_name, suspicious, phase, technique
+| sort _time
+
+
+| -------------------------------------------------------------------------
+| P3-B: Registry Run Key Write (T1547.001)
+| -------------------------------------------------------------------------
+index=sysmon EventCode=13
+    earliest="2026-06-21T10:15:00" latest="2026-06-21T11:00:00"
+    TargetObject LIKE "*\\CurrentVersion\\Run*"
+| where NOT User IN ("SYSTEM","NT AUTHORITY\\SYSTEM")
+| eval phase="P3_Persistence"
+| eval technique="T1547.001"
+| eval severity="High"
+| table _time, host, User, TargetObject, Details, phase, technique
+| sort _time
+
+
+| =========================================================================
+| PHASE 4 — PRIVILEGE ESCALATION
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| P4-A: Full Escalation Chain — LSASS + Privileges + Kerberoasting
+| -------------------------------------------------------------------------
+| Correlates across three detection points in one query
+|
+(index=sysmon EventCode=10 TargetImage="*lsass.exe"
+ earliest="2026-06-21T11:00:00" latest="2026-06-21T11:45:00"
+ | eval event_type="LSASS_Access" | eval technique="T1134.001")
+
+UNION
+
+(index=wineventlog EventCode=4672
+ earliest="2026-06-21T11:00:00" latest="2026-06-21T11:45:00"
+ | where PrivilegeList LIKE "*SeImpersonatePrivilege*"
+ | eval event_type="SeImpersonate_Assigned" | eval technique="T1134.001")
+
+UNION
+
+(index=wineventlog EventCode=4769
+ TicketEncryptionType="0x17"
+ earliest="2026-06-21T11:00:00" latest="2026-06-21T11:45:00"
+ | eval event_type="Kerberoasting_TGS" | eval technique="T1558.003")
+
+UNION
+
+(index=sysmon EventCode=13
+ TargetObject="*ms-settings*"
+ earliest="2026-06-21T11:00:00" latest="2026-06-21T11:45:00"
+ | eval event_type="UAC_Bypass_Registry" | eval technique="T1548.002")
+
+| eval phase="P4_PrivEsc"
+| eval ts_utc=_time + 14400
+| table ts_utc, host, event_type, technique, phase
+| sort ts_utc
+
+
+| =========================================================================
+| PHASE 5 — DEFENSE EVASION
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| P5: Defense Evasion Trifecta — Log Clear + AV Off + Masquerade
+| -------------------------------------------------------------------------
+(index=wineventlog (EventCode=1102 OR EventCode=104)
+ earliest="2026-06-21T11:45:00" latest="2026-06-21T12:15:00"
+ | eval evasion_type="Log_Cleared" | eval technique="T1070.001"
+ | eval severity="Critical")
+
+UNION
+
+(index=wineventlog EventCode=5001
+ earliest="2026-06-21T11:45:00" latest="2026-06-21T12:15:00"
+ | eval evasion_type="Defender_Disabled" | eval technique="T1562.001"
+ | eval severity="Critical")
+
+UNION
+
+(index=sysmon EventCode=1
+ earliest="2026-06-21T11:45:00" latest="2026-06-21T12:15:00"
+ | where Image LIKE "%svccheck.exe"
+ | eval evasion_type="Masquerading_Rename" | eval technique="T1036"
+ | eval severity="High")
+
+| eval phase="P5_DefenseEvasion"
+| table _time, host, evasion_type, technique, severity, phase
+| sort _time
+
+
+| =========================================================================
+| PHASE 6 — LATERAL MOVEMENT
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| P6: Pass-the-Ticket + WMI Remote Execution (MTTD 23min — SLA missed)
+| -------------------------------------------------------------------------
+| Root cause of SLA miss: WMI correlation too slow; added this query
+|
+index=wineventlog (EventCode=4648 OR EventCode=4624)
+    earliest="2026-06-21T12:15:00" latest="2026-06-21T13:00:00"
+| eval logon_type=if(EventCode=4624, "Network_Logon", "Explicit_Cred")
+| where (logon_type="Network_Logon" AND LogonType="3")
+     OR logon_type="Explicit_Cred"
+| where NOT (user="SYSTEM" OR user LIKE "%$")
+| join type=inner host [
+    search index=sysmon EventCode=1
+    earliest="2026-06-21T12:15:00" latest="2026-06-21T13:00:00"
+    ParentImage LIKE "%WmiPrvSE.exe"
+    | stats count by host
+    | eval wmi_exec="YES"
+  ]
+| eval phase="P6_LateralMovement"
+| eval technique="T1021.002,T1550.002,T1047"
+| eval sla_status="MISSED — 23 min (SLA: 20 min)"
+| table _time, host, user, logon_type, wmi_exec, sla_status, phase, technique
+| sort _time
+
+
+| =========================================================================
+| PHASE 7 — C2 ESTABLISHMENT
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| P7: Cobalt Strike Domain Fronting — TLS Inspection Required
+| -------------------------------------------------------------------------
+index=zeek_ssl OR index=proxy
+    earliest="2026-06-21T13:00:00" latest="2026-06-21T13:45:00"
+    (ja3="a0e9f5d64349fb13191bc781f81f42e1"
+  OR (server_name LIKE "*azure-cdn*" AND http_host LIKE "*attacker-c2*"))
+| eval phase="P7_C2"
+| eval technique="T1071.001,T1090.004,T1573.002"
+| eval detection_method=if(isnotnull(ja3), "JA3_Fingerprint", "Domain_Fronting")
+| table _time, "id.orig_h", server_name, ja3,
+        detection_method, phase, technique
+| sort _time
+
+
+| =========================================================================
+| PHASE 8 — COLLECTION & EXFILTRATION
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| P8: Archive + Volumetric + DLP
+| -------------------------------------------------------------------------
+(index=sysmon OR index=linux_audit
+ earliest="2026-06-21T13:45:00" latest="2026-06-21T15:00:00"
+ | where (exe="/usr/bin/tar" AND auid!="0")
+      OR (Image LIKE "%Compress-Archive%" AND host="WS-FIN-04")
+ | eval exfil_event="Archive_Created" | eval technique="T1560.001")
+
+UNION
+
+(index=zeek_conn
+ earliest="2026-06-21T13:45:00" latest="2026-06-21T15:00:00"
+ | where orig_bytes > 50000000
+   AND NOT cidrmatch("10.0.0.0/8", "id.resp_h")
+ | eval exfil_event="Large_Egress" | eval technique="T1041"
+ | eval mb_out=round(orig_bytes/1048576, 1))
+
+UNION
+
+(index=proxy
+ earliest="2026-06-21T13:45:00" latest="2026-06-21T15:00:00"
+ | where server_name LIKE "*.amazonaws.com"
+   AND bytes_out > 10000000
+ | eval exfil_event="S3_Upload" | eval technique="T1567.002")
+
+| eval phase="P8_Exfil"
+| table _time, host, exfil_event, mb_out, technique, phase
+| sort _time
+
+
+| =========================================================================
+| ENGAGEMENT SCORECARD — SLA PERFORMANCE DASHBOARD
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| SCORECARD: MTTD per phase vs SLA target
+| -------------------------------------------------------------------------
+| makeresults count=8
+| streamstats count as phase_num
+| eval phase=case(
+    phase_num=1, "P1 Reconnaissance",
+    phase_num=2, "P2 Initial Access",
+    phase_num=3, "P3 Exec/Persist",
+    phase_num=4, "P4 Priv Escalation",
+    phase_num=5, "P5 Defense Evasion",
+    phase_num=6, "P6 Lateral Movement",
+    phase_num=7, "P7 C2",
+    phase_num=8, "P8 Exfil"
+  )
+| eval sla_minutes=case(
+    phase_num=5, 15, 1=1, 20
+  )
+| eval mttd_minutes=case(
+    phase_num=1, null(),     // Missed
+    phase_num=2, 8,
+    phase_num=3, 14,
+    phase_num=4, 6,
+    phase_num=5, 3,
+    phase_num=6, 23,         // Late — SLA miss
+    phase_num=7, 17,
+    phase_num=8, 11
+  )
+| eval score=case(
+    isnull(mttd_minutes), 0,
+    mttd_minutes <= sla_minutes, 5,
+    1=1, 2
+  )
+| eval sla_status=case(
+    isnull(mttd_minutes), "❌ MISSED",
+    mttd_minutes <= sla_minutes, "✅ SLA MET",
+    "⚠️  LATE"
+  )
+| eval detection_layer=case(
+    phase_num=1, "—",
+    phase_num=2, "Zeek + CrowdStrike",
+    phase_num=3, "Elastic SIEM",
+    phase_num=4, "CS + Elastic",
+    phase_num=5, "Elastic SIEM",
+    phase_num=6, "Elastic SIEM",
+    phase_num=7, "Zscaler (TLS)",
+    phase_num=8, "Zeek + Zscaler"
+  )
+| table phase, sla_minutes, mttd_minutes, sla_status, score, detection_layer
+| addcoltotals score labelfield=phase label="TOTAL SCORE"

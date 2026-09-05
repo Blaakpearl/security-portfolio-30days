@@ -1,0 +1,202 @@
+// =========================================================================
+// Day 21 — Elastic EQL: Full Kill Chain Correlation Rules
+// NovaCrest Capital Group | Week 3 Capstone
+// All 8 ATT&CK phases — Initial Access through Exfiltration
+// =========================================================================
+// Index: winlogbeat-*, zeek-*, filebeat-*
+// Load via: Kibana → Security → Detection Rules → Import
+// =========================================================================
+
+
+// =========================================================================
+// RULE 1: Initial Access — Office Macro → PowerShell Chain (T1566.001)
+// =========================================================================
+// name: "APT Kill Chain — P2 Initial Access: Macro Execution"
+// risk_score: 95 | severity: critical | interval: 5m
+// -------------------------------------------------------------------------
+sequence by host.name with maxspan=3m
+  [process where event.type == "start"
+   and process.parent.name : ("WINWORD.EXE","EXCEL.EXE","OUTLOOK.EXE","MSPUB.EXE")
+   and process.name : ("powershell.exe","cmd.exe","wscript.exe","cscript.exe","mshta.exe")]
+  [process where event.type == "start"
+   and process.executable : ("*\\AppData\\Local\\Temp\\*",
+                              "*\\AppData\\Roaming\\*",
+                              "*\\Users\\Public\\*")
+   and process.name : ("*.exe","*.dll")]
+// ATT&CK: T1566.001, T1059.001
+// Detection layer: Sysmon / CrowdStrike
+// Expected MTTD: < 10 min (JA3 fires first; this corroborates)
+
+
+// =========================================================================
+// RULE 2: Execution & Persistence — Scheduled Task Creation (T1053.005)
+// =========================================================================
+// name: "APT Kill Chain — P3 Persistence: Scheduled Task"
+// risk_score: 75 | severity: high | interval: 5m
+// -------------------------------------------------------------------------
+sequence by host.name with maxspan=5m
+  [process where event.type == "start"
+   and process.name == "schtasks.exe"
+   and process.args : ("/create", "/sc", "/tr")
+   and not process.parent.name : ("services.exe","taskeng.exe")]
+  [registry where registry.path :
+   "*\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\Tasks\\*"]
+// Also catch via Windows Security Event 4698:
+// any where event.code == "4698"
+//   and winlog.event_data.TaskName != null
+//   and not winlog.event_data.SubjectUserName : ("SYSTEM","Administrator")
+// ATT&CK: T1053.005
+// Note: Run key persistence (T1547.001) missed in exercise — add separate rule
+
+
+// =========================================================================
+// RULE 3: Privilege Escalation — Full Escalation Chain (T1548.002 + T1134.001)
+// =========================================================================
+// name: "APT Kill Chain — P4 Privilege Escalation: Token + UAC"
+// risk_score: 99 | severity: critical | interval: 5m
+// -------------------------------------------------------------------------
+
+// 3A: LSASS Access from unexpected process
+process where event.type == "start"
+  and process.pe.original_file_name == "lsass.exe"
+| network where destination.process.name == "lsass.exe"
+  and source.process.executable : "*\\Temp\\*"
+  and source.process.code_signature.trusted == false
+
+// 3B: SeImpersonatePrivilege on standard user logon
+any where event.code == "4672"
+  and winlog.event_data.PrivilegeList : "*SeImpersonatePrivilege*"
+  and not winlog.event_data.SubjectUserName :
+      ("SYSTEM","LOCAL SERVICE","NETWORK SERVICE","*$")
+
+// 3C: UAC bypass registry write → elevated process spawn
+sequence by host.name with maxspan=30s
+  [registry where registry.path :
+   ("*\\Software\\Classes\\ms-settings\\shell\\open\\command*",
+    "*\\Software\\Classes\\mscfile\\shell\\open\\command*")]
+  [process where process.parent.name : ("fodhelper.exe","eventvwr.exe","sdclt.exe")
+   and process.name : ("cmd.exe","powershell.exe")
+   and process.pe.original_file_name : ("cmd.exe","powershell.exe")]
+
+// 3D: Kerberoasting burst (3 RC4 TGS in 10 seconds)
+sequence by source.ip with maxspan=10s
+  [authentication where event.code == "4769"
+   and winlog.event_data.TicketEncryptionType == "0x17"
+   and not winlog.event_data.ServiceName : ("krbtgt","*$")]
+  [authentication where event.code == "4769"
+   and winlog.event_data.TicketEncryptionType == "0x17"]
+  [authentication where event.code == "4769"
+   and winlog.event_data.TicketEncryptionType == "0x17"]
+// ATT&CK: T1548.002, T1134.001, T1558.003
+
+
+// =========================================================================
+// RULE 4: Defense Evasion — Log Clearing + Defender Disable (T1070.001)
+// =========================================================================
+// name: "APT Kill Chain — P5 Defense Evasion: Log Clear + AV Disable"
+// risk_score: 99 | severity: critical | interval: 1m
+// -------------------------------------------------------------------------
+
+// 4A: Security log cleared (FASTEST DETECTION IN EXERCISE — 3 min)
+any where event.code : ("1102","104")
+
+// 4B: Defender real-time protection disabled
+any where event.code == "5001"  // Windows Defender real-time disabled
+   or (event.code == "7036"
+       and winlog.event_data.param1 == "Windows Defender Antivirus Service"
+       and winlog.event_data.param2 == "stopped")
+
+// 4C: AMSI bypass (PowerShell ScriptBlock showing patch pattern)
+any where event.code == "4104"  // PowerShell script block logging
+  and winlog.event_data.ScriptBlockText :
+      ("*AmsiScanBuffer*","*amsiInitFailed*","*[Ref].Assembly*")
+// ATT&CK: T1070.001, T1562.001, T1562.004
+
+
+// =========================================================================
+// RULE 5: Lateral Movement — Pass-the-Ticket + WMI Execution (T1550.002)
+// =========================================================================
+// name: "APT Kill Chain — P6 Lateral Movement: PtT + WMI"
+// risk_score: 85 | severity: high | interval: 5m
+// -------------------------------------------------------------------------
+
+// 5A: Network logon with explicit credential (Pass-the-Ticket indicator)
+sequence by host.name with maxspan=2m
+  [authentication where event.code == "4648"
+   and winlog.event_data.TargetServerName != host.name
+   and not winlog.event_data.SubjectUserName : ("SYSTEM","*$")]
+  [authentication where event.code == "4624"
+   and winlog.event_data.LogonType == "3"
+   and not winlog.event_data.SubjectUserName : ("SYSTEM","*$")]
+
+// 5B: WMI remote process creation (source != target)
+sequence by host.name with maxspan=30s
+  [process where event.type == "start"
+   and process.name == "WmiPrvSE.exe"]
+  [process where process.parent.name == "WmiPrvSE.exe"
+   and process.name : ("cmd.exe","powershell.exe","whoami.exe")
+   and not host.name : ("SRV-WSUS*","SRV-SCCM*")]  // Exclude legitimate WMI management
+// ATT&CK: T1021.002, T1550.002, T1047
+
+
+// =========================================================================
+// RULE 6: C2 — Domain Fronting + JA3 Detection (T1090.004)
+// =========================================================================
+// name: "APT Kill Chain — P7 C2: Domain Fronting + Known JA3"
+// risk_score: 95 | severity: critical | interval: 5m
+// -------------------------------------------------------------------------
+
+// 6A: Known C2 JA3 fingerprint (from Zeek ssl.log)
+// Requires: zeek-* index with ja3 field populated
+any where zeek.ssl.ja3 :
+    ("a0e9f5d64349fb13191bc781f81f42e1",   // Sliver
+     "f4febc55ea12b31ae17cfb7e614afda8",   // Havoc
+     "51c64c77e60f3980eea90869b68c58a8",   // Metasploit
+     "6734f37431670b3ab4292b8f60f29984",   // Cobalt Strike (alt)
+     "c12f54a3f91dc7bafd92cb59fe009a35")   // Brute Ratel
+
+// 6B: Domain fronting — Host header ≠ SNI (requires TLS inspection)
+// Requires: Zscaler or NGFW decryption feeding http.log
+any where zeek.http.virtual_host != zeek.ssl.server_name
+  and zeek.http.virtual_host != null
+  and zeek.ssl.server_name != null
+  and not zeek.ssl.server_name : "*.novacrest.com"
+// ATT&CK: T1071.001, T1090.004, T1573.002
+
+
+// =========================================================================
+// RULE 7: Exfiltration — Archive + Large Outbound Transfer (T1560.001)
+// =========================================================================
+// name: "APT Kill Chain — P8 Exfil: Archive + Volumetric"
+// risk_score: 90 | severity: critical | interval: 5m
+// -------------------------------------------------------------------------
+
+// 7A: Archive utility execution on compromised host
+process where event.type == "start"
+  and process.name : ("Compress-Archive","tar","7z.exe","zip.exe","rar.exe")
+  and process.args : ("*\\Finance\\*","*\\trading*","*bloomberg*","*client*")
+  and host.name : ("WS-FIN-04","lnx-trade-01")  // Known compromised hosts
+
+// 7B: Large outbound transfer (Zeek volumetric — > 50 MB external)
+// Requires: zeek-conn-* index
+any where zeek.conn.orig_bytes > 52428800   // 50 MB
+  and not network.destination.ip :
+      ("10.*","172.16.*","192.168.*","13.107.*")  // Exclude internal + Azure CDN
+// ATT&CK: T1560.001, T1041, T1567.002
+
+
+// =========================================================================
+// RULE 8: FULL KILL CHAIN CORRELATION — Multi-Phase Sequence
+// =========================================================================
+// name: "APT Kill Chain — Full Sequence: Initial Access to Exfil"
+// risk_score: 100 | severity: critical | interval: 1h
+// This rule fires when at least 4 phases detected on same host in 6 hours
+// -------------------------------------------------------------------------
+sequence by host.name with maxspan=6h
+  [process where event.type == "start"
+   and process.parent.name : ("WINWORD.EXE","EXCEL.EXE")]    // P2 Initial Access
+  [any where event.code : ("4672","4769")]                    // P4 Priv Escalation
+  [any where event.code : ("1102","5001")]                    // P5 Defense Evasion
+  [authentication where event.code == "4648"]                 // P6 Lateral Movement
+// If this fires, IMMEDIATE IR RESPONSE — full APT lifecycle confirmed
+// ATT&CK: Full kill chain — T1566 → T1134 → T1070 → T1021

@@ -1,0 +1,218 @@
+{
+  "name": "Day 21 — Week 3 Capstone: Full APT Kill Chain Results",
+  "versions": {
+    "attack": "14",
+    "navigator": "4.9",
+    "layer": "4.5"
+  },
+  "domain": "enterprise-attack",
+  "description": "NovaCrest Capital Group — NCA-PURPLE-2026-06-21. Full APT lifecycle exercise (8 phases). Green=detected within SLA. Yellow=detected late (SLA missed). Red=missed/not detected. Score: 32/40 (80%). Mean MTTD: 12.3 min.",
+  "filters": {
+    "platforms": ["Windows", "Linux", "Azure AD", "Office 365"]
+  },
+  "sorting": 0,
+  "layout": {
+    "layout": "side",
+    "aggregateFunction": "average",
+    "showID": true,
+    "showName": true,
+    "showAggregateScores": true,
+    "countUnscored": false
+  },
+  "hideDisabled": false,
+  "techniques": [
+    {
+      "techniqueID": "T1592",
+      "color": "#F44336",
+      "comment": "❌ Missed — Phase 1 — Passive external recon; no internal signals expected",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "1"}, {"name": "detected", "value": "false"}]
+    },
+    {
+      "techniqueID": "T1589",
+      "color": "#F44336",
+      "comment": "❌ Missed — Phase 1 — Credential harvesting (external); no internal log",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "1"}, {"name": "detected", "value": "false"}]
+    },
+    {
+      "techniqueID": "T1593",
+      "color": "#F44336",
+      "comment": "❌ Missed — Phase 1 — Open source intelligence; passive; undetectable",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "1"}, {"name": "detected", "value": "false"}]
+    },
+    {
+      "techniqueID": "T1566.001",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 2 — MTTD 8 min — Sysmon: WINWORD→powershell",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "2"}, {"name": "mttd_minutes", "value": "8"}]
+    },
+    {
+      "techniqueID": "T1059.001",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 2 — MTTD 8 min — Sysmon Event 1 + JA3",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "2"}, {"name": "mttd_minutes", "value": "8"}]
+    },
+    {
+      "techniqueID": "T1547.001",
+      "color": "#F44336",
+      "comment": "❌ Missed — Phase 3 — Run key write not alerted; registry rule not tuned",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "3"}, {"name": "detected", "value": "false"}]
+    },
+    {
+      "techniqueID": "T1053.005",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 3 — MTTD 14 min — Event 4698 + EQL rule",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "3"}, {"name": "mttd_minutes", "value": "14"}]
+    },
+    {
+      "techniqueID": "T1548.002",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 4 — MTTD 6 min — Sysmon 13 ms-settings key",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "4"}, {"name": "mttd_minutes", "value": "6"}]
+    },
+    {
+      "techniqueID": "T1134.001",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 4 — MTTD 6 min — Sysmon 10 + Event 4672",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "4"}, {"name": "mttd_minutes", "value": "6"}]
+    },
+    {
+      "techniqueID": "T1558.003",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 4 — MTTD 6 min — Event 4769 RC4 × 3 in 4s",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "4"}, {"name": "mttd_minutes", "value": "6"}]
+    },
+    {
+      "techniqueID": "T1070.001",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 5 — MTTD 3 min (FASTEST) — Event 1102",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "5"}, {"name": "mttd_minutes", "value": "3"}]
+    },
+    {
+      "techniqueID": "T1562.001",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 5 — MTTD 3 min — Event 5001 Defender off",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "5"}, {"name": "mttd_minutes", "value": "3"}]
+    },
+    {
+      "techniqueID": "T1036",
+      "color": "#F44336",
+      "comment": "❌ Missed — Phase 5 — Rubeus renamed to svccheck.exe; PE hash not in blocklist",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "5"}, {"name": "detected", "value": "false"}]
+    },
+    {
+      "techniqueID": "T1562.004",
+      "color": "#F44336",
+      "comment": "❌ Missed — Phase 5 — Firewall rule disabled; no alert rule deployed",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "5"}, {"name": "detected", "value": "false"}]
+    },
+    {
+      "techniqueID": "T1021.002",
+      "color": "#FFC107",
+      "comment": "⚠️ Detected LATE — Phase 6 — MTTD 23 min (SLA: 20 min) — SMB share enum",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "6"}, {"name": "mttd_minutes", "value": "23"}]
+    },
+    {
+      "techniqueID": "T1550.002",
+      "color": "#FFC107",
+      "comment": "⚠️ Detected LATE — Phase 6 — MTTD 23 min — Pass-the-Ticket 4648/4624 corr",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "6"}, {"name": "mttd_minutes", "value": "23"}]
+    },
+    {
+      "techniqueID": "T1047",
+      "color": "#FFC107",
+      "comment": "⚠️ Detected LATE — Phase 6 — MTTD 23 min — WmiPrvSE.exe spawn detection",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "6"}, {"name": "mttd_minutes", "value": "23"}]
+    },
+    {
+      "techniqueID": "T1071.001",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 7 — MTTD 17 min — Cobalt Strike JA3 + fronting",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "7"}, {"name": "mttd_minutes", "value": "17"}]
+    },
+    {
+      "techniqueID": "T1090.004",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 7 — MTTD 17 min — TLS insp: Host≠SNI (now enabled)",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "7"}, {"name": "mttd_minutes", "value": "17"}]
+    },
+    {
+      "techniqueID": "T1573.002",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 7 — MTTD 17 min — JA3/JARM fingerprint",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "7"}, {"name": "mttd_minutes", "value": "17"}]
+    },
+    {
+      "techniqueID": "T1001.001",
+      "color": "#F44336",
+      "comment": "❌ Missed — Phase 7 — Sleep jitter CV inconclusive in 45-min window",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "7"}, {"name": "detected", "value": "false"}]
+    },
+    {
+      "techniqueID": "T1560.001",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 8 — MTTD 11 min — Zeek files.log archive",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "8"}, {"name": "mttd_minutes", "value": "11"}]
+    },
+    {
+      "techniqueID": "T1041",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 8 — MTTD 11 min — Zeek 85 MB volumetric",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "8"}, {"name": "mttd_minutes", "value": "11"}]
+    },
+    {
+      "techniqueID": "T1567.002",
+      "color": "#4CAF50",
+      "comment": "✅ Detected within SLA — Phase 8 — MTTD 11 min — Zscaler DLP blocked upload",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "8"}, {"name": "mttd_minutes", "value": "11"}]
+    },
+    {
+      "techniqueID": "T1074.001",
+      "color": "#F44336",
+      "comment": "❌ Missed — Phase 8 — Staging in %SYSTEMROOT%\\Temp\\ not alerted (legit path)",
+      "enabled": true,
+      "metadata": [{"name": "phase", "value": "8"}, {"name": "detected", "value": "false"}]
+    }
+  ],
+  "legendItems": [
+    {"label": "✅ Detected within SLA",  "color": "#4CAF50"},
+    {"label": "⚠️ Detected (SLA missed)", "color": "#FFC107"},
+    {"label": "❌ Not detected",          "color": "#F44336"}
+  ],
+  "metadata": [
+    {"name": "exercise",     "value": "NCA-PURPLE-2026-06-21"},
+    {"name": "date",         "value": "2026-06-21"},
+    {"name": "analyst",      "value": "V. Willis, CISSP"},
+    {"name": "total_score",  "value": "32/40 (80%)"},
+    {"name": "mean_mttd",    "value": "12.3 minutes"},
+    {"name": "phases",       "value": "8 — full APT lifecycle"},
+    {"name": "sla",          "value": "20 min per phase (15 min P5)"}
+  ],
+  "showTacticRowBackground": true,
+  "tacticRowBackground": "#1a1a2e",
+  "selectTechniquesAcrossTactics": true,
+  "selectSubtechniquesWithParent": false
+}
