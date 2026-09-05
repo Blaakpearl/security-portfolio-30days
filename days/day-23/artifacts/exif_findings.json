@@ -1,0 +1,159 @@
+{
+  "analysis_date": "2026-06-23T00:00:00Z",
+  "analyst": "V. Willis, CISSP",
+  "subject": "j.henderson + NovaCrest employees (simulated)",
+  "note": "All personal data is simulated for portfolio demonstration purposes",
+  "photos_analyzed": 5,
+  "gps_found": 4,
+  "results": [
+    {
+      "filename": "jhenderson_instagram_2026-05-14.jpg",
+      "source": "Instagram @jhenderson_nyc (public)",
+      "overall_risk": "CRITICAL",
+      "critical_count": 1,
+      "high_count": 2,
+      "risk_findings": [
+        {
+          "field": "GPS Coordinates",
+          "value": "40.748817, -73.985428",
+          "risk": "CRITICAL",
+          "technique": "T1430",
+          "intel_value": "Precise location: 40.748817, -73.985428. Nearest landmark: NovaCrest HQ (29m). Maps: https://www.google.com/maps?q=40.748817,-73.985428",
+          "attacker_use": "Physical surveillance; workplace/home location; routine mapping"
+        },
+        {
+          "field": "Device Model + OS",
+          "value": "Apple iPhone 15 Pro / 17.2.1",
+          "risk": "HIGH",
+          "technique": "T1592.002",
+          "intel_value": "Target device: Apple iPhone 15 Pro running 17.2.1",
+          "attacker_use": "Device-specific exploit selection; OS vulnerability targeting; patch level assessment"
+        },
+        {
+          "field": "Event/Venue Reference",
+          "value": "Great lunch! #NYC #Finance",
+          "risk": "MEDIUM",
+          "technique": "T1593.001",
+          "intel_value": "Subject tagged NYC Finance — employer and city confirmed",
+          "attacker_use": "Spearphishing lure customization"
+        }
+      ]
+    },
+    {
+      "filename": "jhenderson_instagram_conference_2026-03-22.jpg",
+      "source": "Instagram @jhenderson_nyc (public)",
+      "overall_risk": "CRITICAL",
+      "critical_count": 1,
+      "high_count": 2,
+      "risk_findings": [
+        {
+          "field": "GPS Coordinates",
+          "value": "40.761429, -73.977355",
+          "risk": "CRITICAL",
+          "technique": "T1430",
+          "intel_value": "Precise location: 40.761429, -73.977355. Nearest landmark: Javits Center (341m). Maps: https://www.google.com/maps?q=40.761429,-73.977355",
+          "attacker_use": "Confirmed subject attended FinTech Summit 2026 — used to craft spearphishing lure"
+        },
+        {
+          "field": "Device Model + OS",
+          "value": "Apple iPhone 15 Pro / 17.2.0",
+          "risk": "HIGH",
+          "technique": "T1592.002",
+          "intel_value": "iPhone 15 Pro, iOS 17.2.0 — patch 17.2.1 was available",
+          "attacker_use": "Minor patch gap; device confirmed"
+        },
+        {
+          "field": "Event/Venue Reference",
+          "value": "Great session at #FinTechSummit2026 @javitscenter",
+          "risk": "HIGH",
+          "technique": "T1593.001",
+          "intel_value": "FinTech Summit 2026, Javits Center — enables conference-themed spearphishing",
+          "attacker_use": "Impersonate conference organizer, sponsor, or speaker in follow-up email"
+        }
+      ]
+    },
+    {
+      "filename": "novacrest_team_photo_2026-02-10.jpg",
+      "source": "NovaCrest official Twitter/X account (public)",
+      "overall_risk": "CRITICAL",
+      "critical_count": 1,
+      "high_count": 2,
+      "risk_findings": [
+        {
+          "field": "GPS Coordinates",
+          "value": "40.748540, -73.983992",
+          "risk": "CRITICAL",
+          "technique": "T1430",
+          "intel_value": "Precise location: 40.748540, -73.983992. Nearest landmark: NovaCrest HQ (0m). Maps: https://www.google.com/maps?q=40.748540,-73.983992",
+          "attacker_use": "Corporate office location confirmed from official company social media post"
+        },
+        {
+          "field": "Device Model + OS",
+          "value": "Apple iPhone 14 / 16.7.4",
+          "risk": "HIGH",
+          "technique": "T1592.002",
+          "intel_value": "Unmanaged personal iPhone 14 running iOS 16.7.4 — 2 major versions behind",
+          "attacker_use": "Multiple unpatched CVEs available; WebKit exploits apply to this version"
+        },
+        {
+          "field": "Outdated iOS Version",
+          "value": "16.7.4",
+          "risk": "HIGH",
+          "technique": "T1592.002",
+          "intel_value": "iOS 16.7.4 — CVE-2023-42916 and CVE-2024-23222 unpatched",
+          "attacker_use": "Zero-click WebKit exploit delivery; JavaScriptCore exploit via malicious web link"
+        }
+      ]
+    },
+    {
+      "filename": "novacrest_employee2_linkedin.jpg",
+      "source": "LinkedIn — Michael Torres, NovaCrest Trading Desk",
+      "overall_risk": "CRITICAL",
+      "critical_count": 1,
+      "high_count": 1,
+      "risk_findings": [
+        {
+          "field": "GPS Coordinates",
+          "value": "40.706005, -74.008827",
+          "risk": "CRITICAL",
+          "technique": "T1430",
+          "intel_value": "Precise location: 40.706005, -74.008827. Nearest landmark: Wall Street area (0m). Maps: https://www.google.com/maps?q=40.706005,-74.008827",
+          "attacker_use": "Second employee confirmed working in Wall Street area; commute time 07:52 inferred"
+        },
+        {
+          "field": "Email in UserComment",
+          "value": "mtorres@novacrest.com",
+          "risk": "HIGH",
+          "technique": "T1589.002",
+          "intel_value": "Corporate email confirmed: mtorres@novacrest.com",
+          "attacker_use": "Second phishing target identified; lateral spearphishing to trading desk"
+        }
+      ]
+    },
+    {
+      "filename": "jhenderson_linkedin_profile_photo.jpg",
+      "source": "LinkedIn public profile photo",
+      "overall_risk": "HIGH",
+      "critical_count": 0,
+      "high_count": 1,
+      "risk_findings": [
+        {
+          "field": "Email in UserComment",
+          "value": "jhenderson@novacrest.com",
+          "risk": "HIGH",
+          "technique": "T1589.002",
+          "intel_value": "Corporate email confirmed in EXIF UserComment: jhenderson@novacrest.com",
+          "attacker_use": "Phishing target email confirmed without any additional effort"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "photos_with_gps": 4,
+    "photos_without_gps": 1,
+    "devices_identified": ["iPhone 15 Pro (iOS 17.2.1)", "iPhone 15 Pro (iOS 17.2.0)", "iPhone 14 (iOS 16.7.4)", "Samsung Galaxy S24 (Android 14)"],
+    "emails_found_in_metadata": ["jhenderson@novacrest.com", "mtorres@novacrest.com"],
+    "key_locations_confirmed": ["NovaCrest HQ (Grand Central area)", "Javits Center (FinTech Summit)", "Wall Street area"],
+    "most_critical_finding": "FinTech Summit photo enabled targeted spearphishing lure construction — direct causal link to breach"
+  }
+}

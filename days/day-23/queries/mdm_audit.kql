@@ -1,0 +1,148 @@
+// =========================================================================
+// Day 23 — Sentinel KQL: MDM Compliance & Mobile OSINT Queries
+// NovaCrest Capital Group | Mobile OSINT / Jamf Pro
+// =========================================================================
+// Requires: Jamf Pro → Azure Event Hub → Sentinel connector
+//           or manual ingestion via custom table (JamfDevices_CL)
+// =========================================================================
+
+// Inline device table for demo (replace with JamfDevices_CL in production)
+let MDMDevices = datatable(
+    Owner: string, Serial: string, Model: string, OSVersion: string,
+    IsSupervised: bool, IsEncrypted: bool, PasscodePresent: bool,
+    JailbreakDetected: bool, LastCheckIn: datetime,
+    ManagedApps: dynamic, UnmanagedApps: dynamic, ComplianceIssues: dynamic
+)[
+    "j.henderson","DNPXQ2XYZABC","iPhone 15 Pro","17.4.1",
+    true,true,true,false,datetime(2026-06-14T08:47:00Z),
+    dynamic(["Outlook","Teams","Bloomberg","CrowdStrike","Zscaler"]),
+    dynamic(["WhatsApp","Telegram","Proton Mail"]),
+    dynamic(["OS 17.4.1 — 17.5 available","Unmanaged E2E apps"]),
+
+    "m.torres","C4KXYZ8R1234","Samsung Galaxy S24","Android 14",
+    false,true,true,false,datetime(2026-06-20T16:22:00Z),
+    dynamic(["Outlook","Teams","Okta Verify"]),
+    dynamic(["Signal","Dropbox","Google Drive"]),
+    dynamic(["BYOD unsupervised — limited MDM control","Personal cloud storage apps"]),
+
+    "s.chen","ABCXYZ999DEF","iPhone 14","16.7.4",
+    true,true,false,false,datetime(2026-06-18T11:05:00Z),
+    dynamic(["Outlook","Bloomberg","Okta Verify"]),
+    dynamic(["TikTok","Snapchat","Cash App"]),
+    dynamic(["CRITICAL: iOS 16.7.4 — two major versions behind","CRITICAL: No screen lock","TikTok installed"]),
+];
+
+
+// -------------------------------------------------------------------------
+// KQL-M-1: Non-Compliant Device Inventory
+// -------------------------------------------------------------------------
+MDMDevices
+| extend DaysSinceCheckIn = datetime_diff('day', now(), LastCheckIn)
+| extend IsCompliant = (
+    OSVersion >= "17.4" and PasscodePresent and
+    not JailbreakDetected and DaysSinceCheckIn <= 30
+  )
+| where not IsCompliant
+| extend CriticalIssues = array_length(
+    array_concat(
+        iif(JailbreakDetected, dynamic(["🔴 Jailbreak detected"]), dynamic([])),
+        iif(not PasscodePresent, dynamic(["🔴 No screen lock"]), dynamic([])),
+        iif(OSVersion < "17.0", dynamic(["🔴 OS critically outdated"]), dynamic([]))
+    )
+  )
+| project Owner, Model, OSVersion, PasscodePresent, JailbreakDetected,
+          DaysSinceCheckIn, ComplianceIssues, CriticalIssues
+| order by CriticalIssues desc
+
+
+// -------------------------------------------------------------------------
+// KQL-M-2: Fleet-Wide OS Currency Summary
+// -------------------------------------------------------------------------
+MDMDevices
+| extend OSType = iif(Model contains "iPhone" or Model contains "iPad",
+    "iOS", "Android")
+| extend VersionStatus = case(
+    OSType == "iOS" and OSVersion >= "17.5", "✅ Current",
+    OSType == "iOS" and OSVersion >= "17.4", "⚠️ Minor patch pending",
+    OSType == "iOS" and OSVersion >= "17.0", "🟠 Major patch needed",
+    OSType == "iOS",                          "🔴 Critically outdated",
+    "ℹ️ Android"
+  )
+| summarize DeviceCount = count() by OSType, VersionStatus
+| order by VersionStatus asc
+
+
+// -------------------------------------------------------------------------
+// KQL-M-3: Risky Unmanaged App Detection
+// -------------------------------------------------------------------------
+let RiskyApps = datatable(AppName: string, RiskCategory: string)[
+    "Telegram",   "E2E Encrypted Messaging (evades corporate monitoring)",
+    "Signal",     "E2E Encrypted Messaging (evades corporate monitoring)",
+    "Proton Mail","E2E Email (bypasses DLP scanning)",
+    "Wickr",      "E2E Messaging (enterprise evasion)",
+    "Dropbox",    "Personal Cloud Storage (data exfil channel)",
+    "Google Drive","Personal Cloud Storage (data exfil channel)",
+    "TikTok",     "US Security Concern — data sovereignty risk",
+    "WhatsApp",   "Unmanaged channel — Meta data sharing",
+    "Cash App",   "Peer P2P payments — financial compliance risk",
+];
+MDMDevices
+| mv-expand UnmanagedApp = UnmanagedApps
+| extend UnmanagedApp = tostring(UnmanagedApp)
+| join kind=inner (RiskyApps) on $left.UnmanagedApp == $right.AppName
+| project Owner, Model, UnmanagedApp, RiskCategory
+| order by RiskCategory asc
+
+
+// -------------------------------------------------------------------------
+// KQL-M-4: BYOD vs Corporate Device Security Gap
+// -------------------------------------------------------------------------
+MDMDevices
+| extend EnrollmentType = iif(IsSupervised,
+    "Corporate (Supervised)", "BYOD (Unsupervised)")
+| summarize
+    DeviceCount       = count(),
+    NoScreenLock      = countif(not PasscodePresent),
+    OutdatedOS        = countif(OSVersion < "17.4"),
+    RiskyApps         = countif(array_length(UnmanagedApps) > 2)
+    by EnrollmentType
+| extend NoLockPct   = round(toreal(NoScreenLock) / DeviceCount * 100, 1)
+| extend OutdatedPct = round(toreal(OutdatedOS)   / DeviceCount * 100, 1)
+| project EnrollmentType, DeviceCount, NoScreenLock, NoLockPct,
+          OutdatedOS, OutdatedPct, RiskyApps
+
+
+// -------------------------------------------------------------------------
+// KQL-M-5: j.henderson Device — Phishing Timeline Correlation
+// -------------------------------------------------------------------------
+MDMDevices
+| where Owner == "j.henderson"
+| extend PhishingOpenTime = datetime(2026-06-14T08:47:00Z)
+| extend MacroExecutionTime = datetime(2026-06-14T09:12:34Z)
+| extend MDMCheckInToPhishingOpen =
+    datetime_diff('minute', PhishingOpenTime, LastCheckIn)
+| extend MDMCheckInToMacro =
+    datetime_diff('minute', MacroExecutionTime, LastCheckIn)
+| extend Finding = "MDM check-in at phishing open time — mobile email confirmed as attack vector"
+| project Owner, Model, OSVersion, LastCheckIn, PhishingOpenTime,
+          MDMCheckInToPhishingOpen, MDMCheckInToMacro, Finding
+
+
+// -------------------------------------------------------------------------
+// KQL-M-6: Compliance Scorecard — Per Device Summary
+// -------------------------------------------------------------------------
+MDMDevices
+| extend DaysSinceCheckIn = datetime_diff('day', now(), LastCheckIn)
+| extend Score = 100
+    - iif(not PasscodePresent, 30, 0)
+    - iif(JailbreakDetected, 50, 0)
+    - iif(OSVersion < "17.0", 25, iif(OSVersion < "17.4", 10, 0))
+    - iif(not IsEncrypted, 30, 0)
+    - iif(DaysSinceCheckIn > 30, 15, iif(DaysSinceCheckIn > 7, 5, 0))
+    - iif(not IsSupervised, 10, 0)
+| extend PostureRating = case(Score >= 90, "✅ Good",
+                              Score >= 70, "⚠️ Acceptable",
+                              Score >= 50, "🟠 At Risk",
+                              "🔴 Critical")
+| project Owner, Model, OSVersion, Score, PostureRating, ComplianceIssues
+| order by Score asc

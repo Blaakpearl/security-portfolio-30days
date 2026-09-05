@@ -1,0 +1,144 @@
+| =========================================================================
+| Day 23 — Splunk SPL: MDM Compliance & Mobile Security Queries
+| NovaCrest Capital Group | Mobile OSINT / MDM Audit
+| Data source: Jamf Pro webhook → Splunk HTTP Event Collector
+| =========================================================================
+
+
+| -------------------------------------------------------------------------
+| QUERY M-1: Non-Compliant Device Inventory
+| All devices with outstanding compliance issues
+| -------------------------------------------------------------------------
+index=jamf sourcetype=jamf:mdm
+| eval compliance_fail=if(
+    osVersion < "17.4" OR passcodePresent="false" OR
+    jailbreakDetected="true" OR
+    daysdiff(now(), strptime(lastContactTime, "%Y-%m-%dT%H:%M:%SZ")) > 30,
+    "NON-COMPLIANT", "COMPLIANT"
+  )
+| where compliance_fail="NON-COMPLIANT"
+| eval issue=case(
+    jailbreakDetected="true", "CRITICAL: Jailbreak detected",
+    passcodePresent="false", "CRITICAL: No screen lock",
+    osVersion < "17.0", "HIGH: OS 2+ versions behind",
+    osVersion < "17.4", "MEDIUM: OS patch pending",
+    daysdiff(now(),strptime(lastContactTime,"%Y-%m-%dT%H:%M:%SZ"))>30,
+    "HIGH: No MDM check-in > 30 days",
+    "UNKNOWN"
+  )
+| table _time, deviceOwner, serialNumber, model, osVersion,
+        passcodePresent, jailbreakDetected, lastContactTime,
+        compliance_fail, issue
+| sort -issue
+
+
+| -------------------------------------------------------------------------
+| QUERY M-2: Outdated iOS/Android Devices by Owner
+| Fleet-wide OS currency report
+| -------------------------------------------------------------------------
+index=jamf sourcetype=jamf:mdm
+| eval os_type=if(like(model, "%iPhone%") OR like(model, "%iPad%"),
+    "iOS", "Android")
+| eval current_version=if(os_type="iOS", "17.5", "Android 14 (Jun 2026)")
+| eval version_status=case(
+    os_type="iOS" AND osVersion >= "17.5", "✅ Current",
+    os_type="iOS" AND osVersion >= "17.4", "⚠️ Minor patch available",
+    os_type="iOS" AND osVersion >= "17.0", "🟠 Major patch available",
+    os_type="iOS", "🔴 Critically outdated (2+ versions)",
+    "ℹ️ Android"
+  )
+| stats count by os_type, version_status
+| sort os_type, version_status
+
+
+| -------------------------------------------------------------------------
+| QUERY M-3: Unmanaged Risky App Detection
+| Detect unmanaged apps that pose data exfil or compliance risk
+| -------------------------------------------------------------------------
+index=jamf sourcetype=jamf:mdm
+| mvexpand unmanagedApps
+| eval risky_app=case(
+    unmanagedApps IN ("Telegram","Signal","Proton Mail","Wickr"),
+    "E2E Encrypted Messaging (evasion risk)",
+    unmanagedApps IN ("Dropbox","Google Drive","Box","OneDrive Personal"),
+    "Personal Cloud Storage (exfil risk)",
+    unmanagedApps IN ("TikTok","Douyin"),
+    "TikTok (US security concerns; data sovereignty)",
+    unmanagedApps IN ("WhatsApp"),
+    "WhatsApp (Meta data sharing; unmanaged channel)",
+    null()
+  )
+| where isnotnull(risky_app)
+| stats count by unmanagedApps, risky_app, deviceOwner
+| sort -count
+
+
+| -------------------------------------------------------------------------
+| QUERY M-4: BYOD Enrollment Security Gap Analysis
+| Unsupervised (BYOD) devices have less MDM control
+| -------------------------------------------------------------------------
+index=jamf sourcetype=jamf:mdm
+| eval enrollment_type=if(isSupervised="true",
+    "Corporate (Supervised)", "BYOD (Unsupervised)")
+| stats count as device_count,
+        sum(eval(if(passcodePresent="false",1,0))) as no_lock,
+        sum(eval(if(osVersion < "17.4",1,0))) as outdated_os
+        by enrollment_type
+| eval gap_pct_no_lock=round(no_lock/device_count*100,1)
+| eval gap_pct_outdated=round(outdated_os/device_count*100,1)
+| table enrollment_type, device_count, no_lock, gap_pct_no_lock,
+        outdated_os, gap_pct_outdated
+
+
+| -------------------------------------------------------------------------
+| QUERY M-5: j.henderson Device — Incident Correlation
+| Correlate MDM last-check-in with phishing timeline
+| -------------------------------------------------------------------------
+index=jamf sourcetype=jamf:mdm deviceOwner="j.henderson"
+| eval check_in_utc=strftime(strptime(lastContactTime,
+    "%Y-%m-%dT%H:%M:%SZ"), "%Y-%m-%d %H:%M:%S UTC")
+| eval phishing_open="2026-06-14 08:47:00 UTC"
+| eval minutes_before_execution=round(
+    (strptime("2026-06-14 09:12:34", "%Y-%m-%d %H:%M:%S") -
+     strptime(lastContactTime, "%Y-%m-%dT%H:%M:%SZ")) / 60, 1
+  )
+| eval finding="MDM check-in at phishing open time confirms mobile access to email"
+| table deviceOwner, model, osVersion, check_in_utc,
+        phishing_open, minutes_before_execution, finding
+
+
+| -------------------------------------------------------------------------
+| QUERY M-6: MDM Compliance Trend (Rolling 30 Days)
+| Track fleet compliance improvement over time
+| -------------------------------------------------------------------------
+index=jamf sourcetype=jamf:mdm
+| eval date=strftime(_time, "%Y-%m-%d")
+| eval compliant=if(
+    osVersion >= "17.4" AND passcodePresent="true" AND
+    jailbreakDetected="false" AND
+    daysdiff(now(), strptime(lastContactTime,"%Y-%m-%dT%H:%M:%SZ")) < 7,
+    1, 0
+  )
+| timechart span=1d
+    sum(compliant) as compliant_devices,
+    count as total_devices
+| eval compliance_pct=round(compliant_devices/total_devices*100, 1)
+| table date, total_devices, compliant_devices, compliance_pct
+
+
+| =========================================================================
+| EXIF / PHOTO METADATA QUERIES (if image metadata ingested)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY E-1: Geotagged Photos from Corporate Accounts
+| Alert on photos posted from corporate social media with GPS intact
+| -------------------------------------------------------------------------
+index=social_media_monitor sourcetype=social:posts
+    account_type="corporate"
+| where isnotnull(exif_gps_lat) AND isnotnull(exif_gps_lon)
+| eval maps_link="https://maps.google.com/?q=" + exif_gps_lat + "," + exif_gps_lon
+| eval risk="HIGH — corporate social post with GPS metadata intact"
+| table _time, account, platform, post_url, exif_gps_lat, exif_gps_lon,
+        exif_device_model, maps_link, risk
+| sort -_time
