@@ -1,0 +1,132 @@
+// =========================================================================
+// Day 22 — Sentinel KQL: Risk Prioritization Queries
+// NovaCrest Capital Group | Threat Intelligence
+// =========================================================================
+// These queries operationalize the risk register within Sentinel,
+// enriching alerts and tracking remediation progress.
+// =========================================================================
+
+// Risk register as inline table for enrichment
+let RiskRegister = datatable(
+    FindingID: string, FindingName: string, Technique: string,
+    CVSSScore: real, DREADScore: real, ATTCKTier: string, Priority: string
+)[
+    "RF-001","GitHub-Exposed AWS Credentials",   "T1552.001",10.0,9.8,"Tier 1 — Critical","P1 — CRITICAL",
+    "RF-002","NOPASSWD sudo (svc_ncg → find)",   "T1548.003", 8.8,8.2,"Tier 2 — High",   "P2 — HIGH",
+    "RF-003","SUID GTFOBins (find/python3/vim)", "T1548.001", 8.8,8.4,"Tier 2 — High",   "P2 — HIGH",
+    "RF-004","Kerberoastable Accounts (RC4)",    "T1558.003", 8.5,7.6,"Tier 2 — High",   "P2 — HIGH",
+    "RF-005","Zeek/auditd SIEM Coverage Gap",    "T1562.001", 9.3,9.2,"Tier 1 — Critical","P1 — CRITICAL",
+    "RF-006","TLS Inspection Disabled",          "T1090.004", 7.5,8.2,"Tier 2 — High",   "P2 — HIGH",
+    "RF-007","253 MB Data Exfiltrated (PII+IP)", "T1567.002", 9.6,9.2,"Tier 1 — Critical","P1 — CRITICAL",
+    "RF-008","Security Log Cleared (649 Events)","T1070.001", 8.2,8.2,"Tier 3 — Medium", "P2 — HIGH",
+    "RF-009","No DLP on S3 Uploads (85 MB gap)","T1005",      8.5,7.8,"Tier 2 — High",   "P2 — HIGH",
+    "RF-010","Domain Fronting C2 Channel",       "T1090.004", 8.0,6.6,"Tier 2 — High",   "P2 — HIGH",
+];
+
+// -------------------------------------------------------------------------
+// QUERY KQL-R-1: Risk Register Full Scorecard
+// -------------------------------------------------------------------------
+RiskRegister
+| extend UnifiedScore = (CVSSScore / 10.0 * 0.35) + (DREADScore / 10.0 * 0.35) + (
+    case(ATTCKTier contains "Critical", 5.0,
+         ATTCKTier contains "High", 4.0,
+         ATTCKTier contains "Medium", 3.0, 2.0) / 5.0 * 0.30
+  )
+| extend RiskBar = repeat("█", toint(UnifiedScore * 10))
+| project FindingID, FindingName, CVSSScore, DREADScore, ATTCKTier, Priority,
+          UnifiedScore = round(UnifiedScore, 3), RiskBar
+| order by CVSSScore desc
+
+
+// -------------------------------------------------------------------------
+// QUERY KQL-R-2: Enrich SecurityAlerts with Risk Register
+// -------------------------------------------------------------------------
+SecurityAlert
+| where TimeGenerated > ago(7d)
+| extend Technique = tostring(ExtendedProperties["Techniques"])
+| join kind=leftouter (RiskRegister) on $left.Technique == $right.Technique
+| where isnotnull(FindingID)
+| project TimeGenerated, AlertName, AlertSeverity, FindingID, FindingName,
+          CVSSScore, Priority, CompromisedEntity
+| order by CVSSScore desc
+
+
+// -------------------------------------------------------------------------
+// QUERY KQL-R-3: P1 Findings — Current Open Status
+// -------------------------------------------------------------------------
+RiskRegister
+| where Priority == "P1 — CRITICAL"
+| extend Status = case(
+    FindingID == "RF-001", "✅ Remediated (key rotated Day 16)",
+    FindingID == "RF-005", "🔄 In Progress (Filebeat config pending)",
+    FindingID == "RF-007", "⚠️ Notification Required (regulator 30-day clock)",
+    "Unknown"
+  )
+| project FindingID, FindingName, CVSSScore, Status
+
+
+// -------------------------------------------------------------------------
+// QUERY KQL-R-4: Regulatory Notification Tracker
+// -------------------------------------------------------------------------
+let Notifications = datatable(
+    Regulation: string, Trigger: string, Deadline: datetime, Status: string
+)[
+    "SEC Reg S-P", "RF-007 client PII exfil", datetime(2026-07-17), "REQUIRED",
+    "NY DFS §500.17 72hr", "RF-007 material cyber event", datetime(2026-06-19), "OVERDUE",
+    "SEC Reg SCI", "RF-007 trading system compromise", datetime(2026-06-30), "REQUIRED",
+];
+Notifications
+| extend DaysRemaining = datetime_diff('day', Deadline, now())
+| extend Urgency = case(DaysRemaining < 0, "❌ OVERDUE",
+                        DaysRemaining < 3, "🔴 URGENT",
+                        DaysRemaining < 7, "🟠 THIS WEEK",
+                        "🟡 SCHEDULED")
+| project Regulation, Trigger, Deadline, DaysRemaining, Urgency, Status
+| order by DaysRemaining asc
+
+
+// -------------------------------------------------------------------------
+// QUERY KQL-R-5: ATT&CK Technique Risk Heat Map
+// Group by tactic and show highest CVSS per tactic
+// -------------------------------------------------------------------------
+RiskRegister
+| extend Tactic = case(
+    Technique in ("T1552.001"), "Credential Access",
+    Technique in ("T1548.001","T1548.003","T1558.003"), "Privilege Escalation",
+    Technique in ("T1562.001","T1070.001"), "Defense Evasion",
+    Technique in ("T1090.004"), "Command & Control",
+    Technique in ("T1567.002","T1005"), "Exfiltration",
+    "Other"
+  )
+| summarize MaxCVSS = max(CVSSScore), FindingCount = count(),
+            Findings = make_set(FindingID) by Tactic
+| extend TacticRisk = case(MaxCVSS >= 9.0, "🔴 Critical",
+                           MaxCVSS >= 7.0, "🟠 High", "🟡 Medium")
+| project Tactic, MaxCVSS, FindingCount, TacticRisk, Findings
+| order by MaxCVSS desc
+
+
+// -------------------------------------------------------------------------
+// QUERY KQL-R-6: Remediation Progress Scorecard
+// -------------------------------------------------------------------------
+RiskRegister
+| extend RemediationStatus = case(
+    FindingID in ("RF-001","RF-002","RF-003","RF-006"), "✅ Complete",
+    FindingID in ("RF-004","RF-005","RF-009","RF-010"), "🔄 In Progress",
+    FindingID == "RF-007", "⚠️ Regulatory Process",
+    FindingID == "RF-008", "🔄 In Progress",
+    "Open"
+  )
+| extend PointsRecovered = case(
+    RemediationStatus == "✅ Complete", CVSSScore,
+    RemediationStatus == "🔄 In Progress", CVSSScore * 0.5,
+    0.0
+  )
+| summarize TotalFindings = count(),
+            Complete = countif(RemediationStatus == "✅ Complete"),
+            InProgress = countif(RemediationStatus == "🔄 In Progress"),
+            Open = countif(RemediationStatus == "Open"),
+            TotalCVSS = sum(CVSSScore),
+            RecoveredCVSS = round(sum(PointsRecovered), 1)
+| extend RemediationPct = round(toreal(Complete + InProgress * 0.5) / toreal(TotalFindings) * 100, 0)
+| project TotalFindings, Complete, InProgress, Open, RemediationPct, TotalCVSS, RecoveredCVSS

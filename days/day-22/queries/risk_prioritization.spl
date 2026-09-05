@@ -1,0 +1,188 @@
+| =========================================================================
+| Day 22 — Splunk SPL: Risk Scoring Dashboard Queries
+| NovaCrest Capital Group | Threat Intelligence
+| =========================================================================
+| These queries operationalize the risk register — enriching live SIEM
+| alerts with risk scores and surfacing high-priority findings for the SOC.
+| =========================================================================
+
+
+| -------------------------------------------------------------------------
+| QUERY R-1: Risk Register Lookup Enrichment
+| Load risk_scores.json as a Splunk lookup and join to alerts
+| -------------------------------------------------------------------------
+| First, upload risk_scores.json as a lookup:
+|   Splunk → Settings → Lookups → Lookup table files → Upload
+|   Filename: risk_register.csv (converted from JSON)
+|
+| Then use in searches:
+index=notable
+| lookup risk_register.csv finding_id AS related_finding
+    OUTPUT cvss_score, dread_score, attck_tier, priority
+| where isnotnull(priority)
+| sort -cvss_score
+| table _time, host, user, notable_title, finding_id,
+        cvss_score, dread_score, attck_tier, priority
+
+
+| -------------------------------------------------------------------------
+| QUERY R-2: Risk-Weighted Alert Prioritization Dashboard
+| Surface highest-risk findings that are still triggering alerts
+| -------------------------------------------------------------------------
+| makeresults count=10
+| streamstats count as row
+| eval finding_id=case(
+    row=1,  "RF-001",
+    row=2,  "RF-002",
+    row=3,  "RF-003",
+    row=4,  "RF-004",
+    row=5,  "RF-005",
+    row=6,  "RF-006",
+    row=7,  "RF-007",
+    row=8,  "RF-008",
+    row=9,  "RF-009",
+    row=10, "RF-010"
+  )
+| eval finding_name=case(
+    row=1,  "GitHub-Exposed AWS Credentials",
+    row=2,  "NOPASSWD sudo (svc_ncg → find)",
+    row=3,  "SUID GTFOBins (find/python3/vim)",
+    row=4,  "Kerberoastable Accounts (RC4)",
+    row=5,  "Zeek/auditd SIEM Gap",
+    row=6,  "TLS Inspection Disabled",
+    row=7,  "253 MB Data Exfiltrated",
+    row=8,  "Security Log Cleared (649 events)",
+    row=9,  "No DLP on S3 Uploads",
+    row=10, "Domain Fronting C2 Channel"
+  )
+| eval cvss_score=case(
+    row=1,10.0, row=2,8.8, row=3,8.8, row=4,8.5,
+    row=5,9.3,  row=6,7.5, row=7,9.6, row=8,8.2,
+    row=9,8.5,  row=10,8.0
+  )
+| eval dread_score=case(
+    row=1,9.8, row=2,8.2, row=3,8.4, row=4,7.6,
+    row=5,9.2, row=6,8.2, row=7,9.2, row=8,8.2,
+    row=9,7.8, row=10,6.6
+  )
+| eval priority=case(
+    row IN (1,5,7), "P1 — CRITICAL",
+    row IN (2,3,4,6,8,9), "P2 — HIGH",
+    row=10, "P2 — HIGH",
+    "P3 — MEDIUM"
+  )
+| eval status=case(
+    row IN (1,2,3,6), "REMEDIATED",
+    row=7, "NOTIFYING REGULATORS",
+    row IN (4,5,8,9,10), "IN PROGRESS",
+    "OPEN"
+  )
+| sort -cvss_score
+| table finding_id, finding_name, cvss_score, dread_score, priority, status
+
+
+| -------------------------------------------------------------------------
+| QUERY R-3: CVSS Score Distribution by Category
+| Visual breakdown of findings by CVSS severity band
+| -------------------------------------------------------------------------
+| makeresults count=10
+| streamstats count as row
+| eval cvss_score=case(
+    row=1,10.0, row=2,8.8, row=3,8.8, row=4,8.5,
+    row=5,9.3,  row=6,7.5, row=7,9.6, row=8,8.2,
+    row=9,8.5,  row=10,8.0
+  )
+| eval severity_band=case(
+    cvss_score >= 9.0, "Critical (9.0–10.0)",
+    cvss_score >= 7.0, "High (7.0–8.9)",
+    cvss_score >= 4.0, "Medium (4.0–6.9)",
+    "Low (0.1–3.9)"
+  )
+| stats count by severity_band
+| sort -count
+
+
+| -------------------------------------------------------------------------
+| QUERY R-4: Technique-to-Finding Mapping (ATT&CK Pivot)
+| Map live alert techniques to risk register findings
+| -------------------------------------------------------------------------
+| makeresults count=10
+| streamstats count as row
+| eval technique=case(
+    row=1,  "T1552.001",
+    row=2,  "T1548.003",
+    row=3,  "T1548.001",
+    row=4,  "T1558.003",
+    row=5,  "T1562.001",
+    row=6,  "T1090.004",
+    row=7,  "T1567.002",
+    row=8,  "T1070.001",
+    row=9,  "T1005",
+    row=10, "T1090.004"
+  )
+| eval finding_id=case(
+    row=1,"RF-001", row=2,"RF-002", row=3,"RF-003",
+    row=4,"RF-004", row=5,"RF-005", row=6,"RF-006",
+    row=7,"RF-007", row=8,"RF-008", row=9,"RF-009", row=10,"RF-010"
+  )
+| eval attck_tier=case(
+    row IN (1,5), "Tier 1 — Critical",
+    row IN (2,3,4,6,7,9,10), "Tier 2 — High",
+    row IN (8), "Tier 3 — Medium",
+    "Tier 4 — Low"
+  )
+| table technique, finding_id, attck_tier
+| sort attck_tier
+
+
+| -------------------------------------------------------------------------
+| QUERY R-5: Regulatory Exposure Summary
+| Which findings trigger which regulatory notifications
+| -------------------------------------------------------------------------
+| makeresults count=6
+| streamstats count as row
+| eval regulation=case(
+    row=1, "SEC Regulation S-P",
+    row=2, "SEC Regulation SCI",
+    row=3, "NY DFS 23 NYCRR 500",
+    row=4, "SOX",
+    row=5, "GDPR Article 33",
+    row=6, "PCI DSS"
+  )
+| eval triggered_by=case(
+    row=1, "RF-007 (client PII), RF-009 (DLP gap), RF-001 (credential breach)",
+    row=2, "RF-007 (trading system compromise), RF-005 (detection gap)",
+    row=3, "RF-007 (72hr notification), RF-005 (§500.06), RF-006 (§500.15)",
+    row=4, "RF-001, RF-007, RF-008",
+    row=5, "RF-007 (client personal data)", 
+    row=6, "RF-001 (cardholder if applicable)"
+  )
+| eval deadline=case(
+    row=1, "July 17, 2026 (30 days from awareness)",
+    row=2, "Promptly — within business days",
+    row=3, "June 19, 2026 (72hr) — OVERDUE",
+    row=4, "Next audit cycle",
+    row=5, "72 hours (if EU residents affected)",
+    row=6, "Within 72 hours (if card data)"
+  )
+| eval status=case(
+    row=3, "❌ OVERDUE",
+    row IN (1,2,5), "⚠️ REQUIRED",
+    "ℹ️ ASSESS"
+  )
+| table regulation, triggered_by, deadline, status
+
+
+| =========================================================================
+| ONGOING: Risk Metric Trending (Track Remediation Progress)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY R-6: Open P1/P2 Findings Count Over Time (Weekly Trend)
+| As remediation completes, this number should decrease
+| -------------------------------------------------------------------------
+| inputlookup risk_register_history.csv  // Historical risk state
+| where priority IN ("P1 — CRITICAL","P2 — HIGH")
+    AND status="OPEN"
+| timechart span=1w count as open_high_critical_findings
+| eval target_line=2  // Target: < 2 open P1/P2 by end of quarter

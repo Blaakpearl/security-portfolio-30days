@@ -1,0 +1,329 @@
+{
+  "metadata": {
+    "case": "NCA-2026-06",
+    "generated": "2026-06-22",
+    "analyst": "V. Willis, CISSP",
+    "methodology": {
+      "cvss": "NIST CVSS 3.1 Base Score (0–10)",
+      "dread": "Microsoft DREAD — mean of D,R,E,A,D dimensions (0–10)",
+      "attck_tier": "Custom model: (DetectGap×2 + Impact×2 + Prevalence×1) / 5 (0–5)",
+      "unified": "CVSS×0.35 + DREAD×0.35 + ATT&CK×0.30 (normalized 0–1)"
+    }
+  },
+  "findings": [
+    {
+      "id": "RF-001",
+      "name": "GitHub-Exposed AWS Credentials",
+      "category": "Credential Exposure",
+      "technique": "T1552.001",
+      "cvss_score": 10.0,
+      "cvss_severity": "Critical",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+      "dread_score": 9.8,
+      "dread_detail": {
+        "damage": 10,
+        "reproducibility": 10,
+        "exploitability": 10,
+        "affected": 9,
+        "discoverability": 10
+      },
+      "attck_tier_score": 5.0,
+      "attck_tier": "Tier 1 — Critical",
+      "attck_detail": {
+        "detectability_gap": 5,
+        "business_impact": 5,
+        "adversary_prevalence": 5
+      },
+      "unified_score": 0.97,
+      "priority": "P1 — CRITICAL: Immediate action required",
+      "status": "Partially Remediated",
+      "owner": "DevOps / Cloud Security",
+      "target_date": "2026-06-25",
+      "regulatory": ["SEC Reg S-P", "NY DFS §500.07", "SOX"]
+    },
+    {
+      "id": "RF-007",
+      "name": "253 MB Data Exfiltrated (Trading Algorithms + Client PII)",
+      "category": "Data Loss — Confirmed Breach",
+      "technique": "T1567.002",
+      "cvss_score": 9.6,
+      "cvss_severity": "Critical",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:N",
+      "dread_score": 9.2,
+      "dread_detail": {
+        "damage": 10,
+        "reproducibility": 8,
+        "exploitability": 7,
+        "affected": 10,
+        "discoverability": 9
+      },
+      "attck_tier_score": 4.8,
+      "attck_tier": "Tier 1 — Critical",
+      "attck_detail": {
+        "detectability_gap": 3,
+        "business_impact": 5,
+        "adversary_prevalence": 4
+      },
+      "unified_score": 0.94,
+      "priority": "P1 — CRITICAL: Immediate action required",
+      "status": "Regulatory Notification Required",
+      "owner": "CISO / Legal / Compliance",
+      "target_date": "2026-07-17",
+      "regulatory": ["SEC Reg S-P", "SEC Reg SCI", "NY DFS §500.17", "GDPR Art.33"]
+    },
+    {
+      "id": "RF-005",
+      "name": "Zeek/auditd Not Forwarded to SIEM (Detection Gap)",
+      "category": "Detection Gap — SIEM Coverage",
+      "technique": "T1562.001",
+      "cvss_score": 9.3,
+      "cvss_severity": "Critical",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:L/A:N",
+      "dread_score": 9.2,
+      "dread_detail": {
+        "damage": 9,
+        "reproducibility": 10,
+        "exploitability": 10,
+        "affected": 10,
+        "discoverability": 7
+      },
+      "attck_tier_score": 4.8,
+      "attck_tier": "Tier 1 — Critical",
+      "attck_detail": {
+        "detectability_gap": 5,
+        "business_impact": 5,
+        "adversary_prevalence": 3
+      },
+      "unified_score": 0.93,
+      "priority": "P1 — CRITICAL: Immediate action required",
+      "status": "In Progress",
+      "owner": "Security Operations / SIEM",
+      "target_date": "2026-06-30",
+      "regulatory": ["NY DFS §500.06", "SEC Reg SCI"]
+    },
+    {
+      "id": "RF-002",
+      "name": "NOPASSWD Sudo Rule (svc_ncg → find binary)",
+      "category": "Misconfiguration — Linux Privilege",
+      "technique": "T1548.003",
+      "cvss_score": 8.8,
+      "cvss_severity": "High",
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H",
+      "dread_score": 8.2,
+      "dread_detail": {
+        "damage": 9,
+        "reproducibility": 9,
+        "exploitability": 9,
+        "affected": 6,
+        "discoverability": 8
+      },
+      "attck_tier_score": 3.8,
+      "attck_tier": "Tier 2 — High",
+      "attck_detail": {
+        "detectability_gap": 3,
+        "business_impact": 4,
+        "adversary_prevalence": 4
+      },
+      "unified_score": 0.85,
+      "priority": "P2 — HIGH: Address this sprint",
+      "status": "Remediated",
+      "owner": "Linux Infrastructure",
+      "target_date": "2026-06-28",
+      "regulatory": ["NY DFS §500.07", "SOX"]
+    },
+    {
+      "id": "RF-003",
+      "name": "SUID GTFOBins on lnx-trade-01 (find, python3, vim)",
+      "category": "Misconfiguration — Linux SUID",
+      "technique": "T1548.001",
+      "cvss_score": 8.8,
+      "cvss_severity": "High",
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H",
+      "dread_score": 8.4,
+      "dread_detail": {
+        "damage": 9,
+        "reproducibility": 9,
+        "exploitability": 9,
+        "affected": 6,
+        "discoverability": 9
+      },
+      "attck_tier_score": 3.8,
+      "attck_tier": "Tier 2 — High",
+      "attck_detail": {
+        "detectability_gap": 3,
+        "business_impact": 4,
+        "adversary_prevalence": 4
+      },
+      "unified_score": 0.85,
+      "priority": "P2 — HIGH: Address this sprint",
+      "status": "Remediated",
+      "owner": "Linux Infrastructure",
+      "target_date": "2026-06-28",
+      "regulatory": ["NY DFS §500.07"]
+    },
+    {
+      "id": "RF-004",
+      "name": "Kerberoastable Service Accounts (RC4 + Weak Password)",
+      "category": "Credential Policy — Kerberos",
+      "technique": "T1558.003",
+      "cvss_score": 8.5,
+      "cvss_severity": "High",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:C/C:H/I:H/A:H",
+      "dread_score": 7.6,
+      "dread_detail": {
+        "damage": 8,
+        "reproducibility": 8,
+        "exploitability": 7,
+        "affected": 7,
+        "discoverability": 8
+      },
+      "attck_tier_score": 4.0,
+      "attck_tier": "Tier 2 — High",
+      "attck_detail": {
+        "detectability_gap": 2,
+        "business_impact": 4,
+        "adversary_prevalence": 5
+      },
+      "unified_score": 0.83,
+      "priority": "P2 — HIGH: Address this sprint",
+      "status": "In Progress — Password rotation underway",
+      "owner": "Active Directory / Identity",
+      "target_date": "2026-07-05",
+      "regulatory": ["NY DFS §500.07", "SOX"]
+    },
+    {
+      "id": "RF-009",
+      "name": "No DLP on S3 Uploads (85 MB Undetected Exfil)",
+      "category": "DLP Gap — Cloud Egress",
+      "technique": "T1005",
+      "cvss_score": 8.5,
+      "cvss_severity": "High",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:N/A:N",
+      "dread_score": 7.8,
+      "dread_detail": {
+        "damage": 9,
+        "reproducibility": 8,
+        "exploitability": 8,
+        "affected": 8,
+        "discoverability": 6
+      },
+      "attck_tier_score": 3.8,
+      "attck_tier": "Tier 2 — High",
+      "attck_detail": {
+        "detectability_gap": 4,
+        "business_impact": 4,
+        "adversary_prevalence": 4
+      },
+      "unified_score": 0.83,
+      "priority": "P2 — HIGH: Address this sprint",
+      "status": "In Progress — Zscaler DLP configured; Purview pending",
+      "owner": "Network Security / DLP",
+      "target_date": "2026-07-15",
+      "regulatory": ["SEC Reg S-P", "NY DFS §500.15"]
+    },
+    {
+      "id": "RF-008",
+      "name": "Windows Security Log Cleared (649 Events Destroyed)",
+      "category": "Evidence Integrity — Log Destruction",
+      "technique": "T1070.001",
+      "cvss_score": 8.2,
+      "cvss_severity": "High",
+      "cvss_vector": "CVSS:3.1/AV:L/AC:L/PR:H/UI:N/S:C/C:N/I:H/A:H",
+      "dread_score": 8.2,
+      "dread_detail": {
+        "damage": 8,
+        "reproducibility": 10,
+        "exploitability": 10,
+        "affected": 8,
+        "discoverability": 5
+      },
+      "attck_tier_score": 3.0,
+      "attck_tier": "Tier 3 — Medium",
+      "attck_detail": {
+        "detectability_gap": 1,
+        "business_impact": 3,
+        "adversary_prevalence": 5
+      },
+      "unified_score": 0.81,
+      "priority": "P2 — HIGH: Address this sprint",
+      "status": "Detection deployed — Event 1102 alert active",
+      "owner": "Security Operations",
+      "target_date": "2026-07-05",
+      "regulatory": ["SEC Reg S-P", "SOX", "NY DFS §500.06"]
+    },
+    {
+      "id": "RF-010",
+      "name": "Domain Fronting C2 Channel (Cobalt Strike via Azure CDN)",
+      "category": "C2 Evasion",
+      "technique": "T1090.004",
+      "cvss_score": 8.0,
+      "cvss_severity": "High",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:H/PR:L/UI:N/S:C/C:H/I:L/A:N",
+      "dread_score": 6.6,
+      "dread_detail": {
+        "damage": 8,
+        "reproducibility": 7,
+        "exploitability": 6,
+        "affected": 8,
+        "discoverability": 4
+      },
+      "attck_tier_score": 3.2,
+      "attck_tier": "Tier 2 — High",
+      "attck_detail": {
+        "detectability_gap": 2,
+        "business_impact": 4,
+        "adversary_prevalence": 3
+      },
+      "unified_score": 0.77,
+      "priority": "P2 — HIGH: Address this sprint",
+      "status": "Detected in capstone — TLS inspection enabled",
+      "owner": "Network Security",
+      "target_date": "2026-07-05",
+      "regulatory": ["NY DFS §500.15"]
+    },
+    {
+      "id": "RF-006",
+      "name": "TLS Inspection Disabled on Zscaler",
+      "category": "Detection Gap — Proxy",
+      "technique": "T1090.004",
+      "cvss_score": 7.5,
+      "cvss_severity": "High",
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "dread_score": 8.2,
+      "dread_detail": {
+        "damage": 8,
+        "reproducibility": 9,
+        "exploitability": 9,
+        "affected": 9,
+        "discoverability": 6
+      },
+      "attck_tier_score": 3.8,
+      "attck_tier": "Tier 2 — High",
+      "attck_detail": {
+        "detectability_gap": 4,
+        "business_impact": 4,
+        "adversary_prevalence": 4
+      },
+      "unified_score": 0.79,
+      "priority": "P2 — HIGH: Address this sprint",
+      "status": "Remediated — TLS inspection enabled June 21",
+      "owner": "Network Security / Zscaler Admin",
+      "target_date": "2026-06-30",
+      "regulatory": ["NY DFS §500.15"]
+    }
+  ],
+  "summary": {
+    "total_findings": 10,
+    "p1_critical": 3,
+    "p2_high": 7,
+    "p3_medium": 0,
+    "p4_low": 0,
+    "mean_cvss": 8.77,
+    "mean_dread": 8.27,
+    "regulatory_notifications_required": 3,
+    "overdue_notifications": 1,
+    "remediated": 4,
+    "in_progress": 5,
+    "open": 1
+  }
+}
