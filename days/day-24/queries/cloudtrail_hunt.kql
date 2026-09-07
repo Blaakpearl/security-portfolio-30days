@@ -1,0 +1,233 @@
+// =========================================================================
+// Day 24 — Sentinel KQL: CloudTrail Cloud Infrastructure Hunt
+// NovaCrest Capital Group | AWS Account 123456789012
+// =========================================================================
+// Requires: AWS CloudTrail → CloudWatch → Sentinel connector
+//           or manual ingestion via AWSCloudTrail_CL custom table
+// =========================================================================
+
+let HuntStart  = datetime(2026-06-14T00:00:00Z);
+let HuntEnd    = datetime(2026-06-21T00:00:00Z);
+let AttackerIP = "198.51.100.99";
+let AttackerAccount = "987654321099";
+let NovaCrestAccount = "123456789012";
+let PrivateRanges = dynamic(["10.", "172.16.", "192.168."]);
+
+// ── Simulated CloudTrail events (inline for demo) ─────────────────────
+let CloudTrailEvents = datatable(
+    EventTime: datetime, EventName: string, EventSource: string,
+    SourceIP: string, UserType: string, UserName: string,
+    RequestParams: string, ErrorCode: string, BytesOut: long
+)[
+    datetime(2026-06-16T09:00:11Z),"GetCallerIdentity","sts.amazonaws.com",
+    "198.51.100.99","IAMUser","trading-api-deploy","","",0,
+    datetime(2026-06-16T09:01:03Z),"ListUsers","iam.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role","","",0,
+    datetime(2026-06-16T09:01:18Z),"ListRoles","iam.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role","","",0,
+    datetime(2026-06-16T09:01:45Z),"ListBuckets","s3.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role","","",0,
+    datetime(2026-06-16T09:02:10Z),"DescribeInstances","ec2.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role","","",0,
+    datetime(2026-06-16T09:02:33Z),"ListSecrets","secretsmanager.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role","","",0,
+    datetime(2026-06-16T09:05:02Z),"StopLogging","cloudtrail.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "trail/novacrest-main-trail","",0,
+    datetime(2026-06-16T09:05:18Z),"UpdateDetector","guardduty.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role","enable=false","",0,
+    datetime(2026-06-16T09:10:05Z),"GetSecretValue","secretsmanager.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "novacrest/bloomberg/api-key","",0,
+    datetime(2026-06-16T09:10:22Z),"GetSecretValue","secretsmanager.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "novacrest/rds/trading-db-password","",0,
+    datetime(2026-06-16T09:15:44Z),"CreateUser","iam.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "svc-monitoring-ops","",0,
+    datetime(2026-06-16T09:16:02Z),"AttachUserPolicy","iam.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "svc-monitoring-ops/AdministratorAccess","",0,
+    datetime(2026-06-16T09:16:28Z),"CreateAccessKey","iam.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "svc-monitoring-ops","",0,
+    datetime(2026-06-16T09:18:11Z),"CreateRole","iam.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    strcat("CrossAccountReadRole|trust:",AttackerAccount),"",0,
+    datetime(2026-06-16T09:25:01Z),"GetObject","s3.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "novacrest-trading-data/client-data/account-balances-2026-06.csv","",4194304,
+    datetime(2026-06-16T09:27:14Z),"GetObject","s3.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "novacrest-trading-data/algorithms/eod-positions-2026-06-15.parquet","",18874368,
+    datetime(2026-06-16T09:29:45Z),"GetObject","s3.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "novacrest-ml-models/sagemaker/trained/trading-signal-v3.tar.gz","",62914560,
+    datetime(2026-06-16T10:05:33Z),"RunInstances","ec2.amazonaws.com",
+    "198.51.100.99","AssumedRole","novacrest-admin-role",
+    "p3.8xlarge x3","",0,
+];
+
+
+// =========================================================================
+// H1 — CLOUD ENUMERATION (T1526)
+// =========================================================================
+
+// KQL-CT-1: Enumeration API Calls from Attacker IP
+CloudTrailEvents
+| where EventTime between (HuntStart .. HuntEnd)
+| where SourceIP == AttackerIP
+| where EventName in ("GetCallerIdentity","ListUsers","ListRoles","ListBuckets",
+                       "DescribeInstances","ListSecrets","ListFunctions","ListModels")
+| extend Phase = "P1: Enumeration"
+| extend Technique = "T1526"
+| summarize APICallCount = count(), Actions = make_set(EventName),
+            FirstCall = min(EventTime), LastCall = max(EventTime)
+    by SourceIP, Phase, Technique
+| extend DurationMin = datetime_diff('minute', LastCall, FirstCall)
+| project SourceIP, APICallCount, DurationMin, Actions, Technique
+
+
+// =========================================================================
+// H2 — IAM BACKDOOR (T1136.003)
+// =========================================================================
+
+// KQL-CT-2A: IAM Backdoor Creation Sequence
+CloudTrailEvents
+| where EventTime between (HuntStart .. HuntEnd)
+| where SourceIP == AttackerIP
+| where EventName in ("CreateUser","AttachUserPolicy","CreateAccessKey","CreateRole")
+| extend Technique = case(
+    EventName == "CreateUser", "T1136.003 — Create Cloud Account",
+    EventName == "AttachUserPolicy", "T1098.001 — Add Cloud Credentials",
+    EventName == "CreateAccessKey", "T1098.001 — Access Key Creation",
+    EventName == "CreateRole", "T1078.004 — Cross-Account Role",
+    "T1136.003"
+  )
+| extend Severity = "Critical"
+| project EventTime, EventName, RequestParams, Technique, Severity
+| order by EventTime asc
+
+
+// KQL-CT-2B: Cross-Account Role Backdoor Detection
+CloudTrailEvents
+| where EventTime between (HuntStart .. HuntEnd)
+| where EventName == "CreateRole"
+| where RequestParams contains AttackerAccount
+| extend Technique = "T1078.004"
+| extend Severity = "Critical"
+| extend Alert = strcat("Cross-account role trusting external account: ", AttackerAccount)
+| project EventTime, SourceIP, RequestParams, Alert, Technique, Severity
+
+
+// =========================================================================
+// H3 — SECRETS MANAGER ACCESS (T1555.006)
+// =========================================================================
+
+// KQL-CT-3: Secret Harvesting Timeline
+CloudTrailEvents
+| where EventTime between (HuntStart .. HuntEnd)
+| where SourceIP == AttackerIP
+| where EventName == "GetSecretValue"
+| extend SecretName = RequestParams
+| extend SecretRisk = case(
+    SecretName contains "bloomberg", "CRITICAL — Bloomberg API key",
+    SecretName contains "rds" or SecretName contains "db", "CRITICAL — Database credentials",
+    SecretName contains "trading" or SecretName contains "execution", "CRITICAL — Trading API key",
+    "HIGH — Unknown secret"
+  )
+| extend Technique = "T1555.006"
+| project EventTime, SourceIP, SecretName, SecretRisk, Technique
+| order by EventTime asc
+
+
+// =========================================================================
+// H4 — S3 DATA EXFILTRATION (T1530)
+// =========================================================================
+
+// KQL-CT-4: S3 Exfiltration Volume Analysis
+CloudTrailEvents
+| where EventTime between (HuntStart .. HuntEnd)
+| where SourceIP == AttackerIP
+| where EventName == "GetObject"
+| extend S3Object = RequestParams
+| extend BytesMB = round(toreal(BytesOut) / 1048576.0, 1)
+| summarize TotalMB = sum(BytesMB), ObjectCount = count(),
+            Objects = make_set(S3Object)
+    by SourceIP
+| extend Technique = "T1530"
+| extend Severity = case(TotalMB > 50, "Critical", TotalMB > 10, "High", "Medium")
+| extend Alert = strcat("S3 exfil: ", TotalMB, " MB across ", ObjectCount, " objects")
+| project SourceIP, TotalMB, ObjectCount, Objects, Severity, Alert, Technique
+
+
+// =========================================================================
+// H5 — EC2 ABUSE (T1578)
+// =========================================================================
+
+// KQL-CT-5: GPU Instance Launch (Crypto Mining Pattern)
+let GPUInstanceTypes = dynamic(["p3.2xlarge","p3.8xlarge","p3.16xlarge",
+    "p4d.24xlarge","g4dn.12xlarge","g4dn.metal","g5.48xlarge"]);
+CloudTrailEvents
+| where EventTime between (HuntStart .. HuntEnd)
+| where SourceIP == AttackerIP
+| where EventName == "RunInstances"
+| extend InstanceType = extract(@"(p\d|g\d)[a-zA-Z0-9.]+", 0, RequestParams)
+| extend MiningIndicator = iif(
+    RequestParams has_any (GPUInstanceTypes), "HIGH — GPU instance launched",
+    "MEDIUM — Unexpected instance launch"
+  )
+| extend Technique = "T1578"
+| extend EstimatedCostPerHour = 12.24  // p3.8xlarge on-demand USD/hr per instance
+| extend EstimatedDailyCost = EstimatedCostPerHour * 24 * 3  // 3 instances
+| project EventTime, SourceIP, RequestParams, MiningIndicator,
+          EstimatedDailyCost, Technique
+
+
+// =========================================================================
+// H6 — CLOUDTRAIL/GUARDDUTY TAMPERING (T1562.008)
+// =========================================================================
+
+// KQL-CT-6: Security Control Tampering
+CloudTrailEvents
+| where EventTime between (HuntStart .. HuntEnd)
+| where SourceIP == AttackerIP
+| where EventName in ("StopLogging","DeleteTrail","UpdateDetector",
+                       "DeleteDetector","DisassociateFromMasterAccount")
+| extend Technique = "T1562.008"
+| extend Severity = "Critical"
+| extend Impact = case(
+    EventName == "StopLogging", "CloudTrail logging STOPPED — audit evidence destroyed",
+    EventName == "DeleteTrail", "CloudTrail trail DELETED — permanent loss",
+    EventName == "UpdateDetector", "GuardDuty DISABLED — detection blind spot",
+    EventName == "DeleteDetector", "GuardDuty DELETED — all automated detection gone",
+    "Security control modified"
+  )
+| project EventTime, SourceIP, EventName, Impact, Severity, Technique
+| order by EventTime asc
+
+
+// =========================================================================
+// CORRELATION — Full Attack Timeline + Phase Mapping
+// =========================================================================
+
+CloudTrailEvents
+| where EventTime between (HuntStart .. HuntEnd)
+| where SourceIP == AttackerIP
+| extend Phase = case(
+    EventName == "GetCallerIdentity",       "0_Verify_Credential",
+    EventName in ("ListUsers","ListRoles","ListBuckets",
+                  "DescribeInstances","ListSecrets"), "1_Enumeration",
+    EventName == "AssumeRole",              "2_Privilege_Escalation",
+    EventName in ("StopLogging","UpdateDetector"), "3_Defense_Evasion",
+    EventName == "GetSecretValue",          "4_Credential_Harvest",
+    EventName == "GetObject",               "5_Data_Exfiltration",
+    EventName in ("CreateUser","AttachUserPolicy",
+                  "CreateRole","CreateAccessKey"), "6_Persistence",
+    EventName == "RunInstances",            "7_Resource_Abuse",
+    "Other"
+  )
+| extend TotalBytesOut = iif(EventName == "GetObject", BytesOut, long(0))
+| project EventTime, Phase, EventName, EventSource, RequestParams,
+          TotalBytesOut, ErrorCode
+| order by EventTime asc

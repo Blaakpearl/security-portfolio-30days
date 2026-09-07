@@ -1,0 +1,113 @@
+{
+  "case": "NCA-2026-06",
+  "hunt": "Cloud Infrastructure Threat Hunt",
+  "generated": "2026-06-24T00:00:00Z",
+  "analyst": "V. Willis, CISSP",
+  "attacker_infrastructure": {
+    "source_ip": "198.51.100.99",
+    "aws_account": "987654321099",
+    "active_window_utc": "2026-06-16T09:00:11Z to 2026-06-16T10:05:33Z",
+    "backdoor_key_last_used": "2026-06-18T14:33:00Z",
+    "backdoor_key_region": "eu-west-1"
+  },
+  "iocs": {
+    "aws_resources_created": [
+      {
+        "type": "IAMUser",
+        "name": "svc-monitoring-ops",
+        "created": "2026-06-16T09:15:44Z",
+        "status": "ACTIVE — DELETE IMMEDIATELY",
+        "policy": "AdministratorAccess"
+      },
+      {
+        "type": "IAMAccessKey",
+        "key_id": "AKIAIOSFODNN7BACKDOOR",
+        "user": "svc-monitoring-ops",
+        "status": "Active",
+        "last_used": "2026-06-18T14:33:00Z",
+        "last_used_region": "eu-west-1"
+      },
+      {
+        "type": "IAMRole",
+        "name": "CrossAccountReadRole",
+        "trust_account": "987654321099",
+        "policies": ["ReadOnlyAccess","AmazonS3FullAccess"],
+        "mfa_required": false,
+        "status": "ACTIVE — DELETE IMMEDIATELY"
+      },
+      {
+        "type": "EC2Instances",
+        "instance_type": "p3.8xlarge",
+        "count": 3,
+        "launched": "2026-06-16T10:05:33Z",
+        "tag_name": "monitoring-node",
+        "status": "Terminated (IR action)"
+      }
+    ],
+    "secrets_accessed": [
+      {"secret_id": "novacrest/bloomberg/api-key", "status": "Rotate immediately"},
+      {"secret_id": "novacrest/rds/trading-db-password", "status": "Rotate immediately"},
+      {"secret_id": "novacrest/trading/execution-api-key", "status": "Rotate immediately — direct trade execution risk"}
+    ],
+    "s3_objects_accessed": [
+      {
+        "bucket": "novacrest-trading-data",
+        "key": "client-data/account-balances-2026-06.csv",
+        "size_bytes": 4194304,
+        "data_classification": "Confidential — Client PII",
+        "regulatory_impact": "SEC Reg S-P"
+      },
+      {
+        "bucket": "novacrest-trading-data",
+        "key": "algorithms/eod-positions-2026-06-15.parquet",
+        "size_bytes": 18874368,
+        "data_classification": "Confidential — Live Trading Positions",
+        "regulatory_impact": "SEC Rule 10b-5"
+      },
+      {
+        "bucket": "novacrest-ml-models",
+        "key": "sagemaker/trained/trading-signal-v3.tar.gz",
+        "size_bytes": 62914560,
+        "data_classification": "Restricted — Proprietary ML Model",
+        "regulatory_impact": "Trade secret"
+      }
+    ],
+    "services_tampered": [
+      {
+        "service": "CloudTrail",
+        "action": "StopLogging",
+        "time": "2026-06-16T09:05:02Z",
+        "impact": "Logging halted — secondary S3 trail captured remaining events",
+        "status": "Restored during IR"
+      },
+      {
+        "service": "GuardDuty",
+        "action": "UpdateDetector (enable=false)",
+        "time": "2026-06-16T09:05:18Z",
+        "impact": "EC2 crypto mining not detected by GuardDuty",
+        "status": "Re-enabled during IR"
+      }
+    ]
+  },
+  "total_exfil_bytes": {
+    "s3_via_cloudtrail": 85983232,
+    "total_mb": 82.0,
+    "note": "CloudTrail data events captured S3 GetObject; separate Zeek capture shows 253 MB total across all channels"
+  },
+  "detection_gaps": [
+    "No enumeration burst alerting — 8 API calls in 2.5 min generated no alert",
+    "GuardDuty disabled before EC2 crypto mining alert could fire",
+    "Single CloudTrail trail could be stopped by attacker — secondary trail saved investigation",
+    "No Secrets Manager GetSecretValue alerting on unexpected principal"
+  ],
+  "remediation_status": {
+    "backdoor_user_deleted": false,
+    "cross_account_role_deleted": false,
+    "bloomberg_key_rotated": false,
+    "rds_password_rotated": false,
+    "trading_execution_key_rotated": false,
+    "cloudtrail_re_enabled": true,
+    "guardduty_re_enabled": true,
+    "ec2_instances_terminated": true
+  }
+}

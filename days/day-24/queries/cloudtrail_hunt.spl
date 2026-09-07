@@ -1,0 +1,252 @@
+| =========================================================================
+| Day 24 — Splunk SPL: CloudTrail Cloud Infrastructure Hunt
+| NovaCrest Capital Group | AWS Account 123456789012
+| Hunt Window: 2026-06-14 00:00 UTC → 2026-06-21 00:00 UTC
+| Attacker IP: 198.51.100.99
+| =========================================================================
+| index=cloudtrail sourcetype=aws:cloudtrail
+| =========================================================================
+
+
+| =========================================================================
+| H1 — CLOUD ENUMERATION (T1526)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CT-1A: Enumeration API Burst from External IP
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| eval external_ip=if(
+    NOT (cidrmatch("10.0.0.0/8", sourceIPAddress) OR
+         cidrmatch("172.16.0.0/12", sourceIPAddress) OR
+         sourceIPAddress IN ("AWS Internal")),
+    "YES", "NO"
+  )
+| where external_ip="YES"
+    AND eventName IN ("GetCallerIdentity","ListBuckets","ListUsers","ListRoles",
+                      "DescribeInstances","ListSecrets","ListFunctions",
+                      "ListModels","DescribeVpcs","ListPolicies")
+| bucket span=5m _time
+| stats count as api_calls, values(eventName) as actions
+    by sourceIPAddress, _time
+| where api_calls >= 3
+| eval attk_technique="T1526"
+| eval alert="Enumeration burst: " + tostring(api_calls) + " discovery calls in 5 min from " + sourceIPAddress
+| sort -api_calls
+
+
+| -------------------------------------------------------------------------
+| QUERY CT-1B: Attacker IP Full API Timeline
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    sourceIPAddress="198.51.100.99"
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| eval phase=case(
+    eventName IN ("GetCallerIdentity"), "0_Verify_Credential",
+    eventName IN ("ListBuckets","ListUsers","ListRoles","ListSecrets",
+                  "DescribeInstances","ListFunctions"), "1_Enumeration",
+    eventName IN ("AssumeRole"), "2_Privilege_Escalation",
+    eventName IN ("GetSecretValue"), "3_Credential_Harvest",
+    eventName IN ("GetObject","CopyObject"), "4_Data_Exfil",
+    eventName IN ("CreateUser","CreateAccessKey","CreateRole",
+                  "AttachUserPolicy"), "5_Persistence",
+    eventName IN ("StopLogging","DeleteTrail","UpdateDetector"), "6_Defense_Evasion",
+    eventName IN ("RunInstances"), "7_Resource_Abuse",
+    "Unknown"
+  )
+| table _time, phase, eventName, eventSource, requestParameters,
+        userIdentity.type, errorCode
+| sort _time
+
+
+| =========================================================================
+| H2 — IAM BACKDOOR (T1136.003)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CT-2A: New IAM Users Created from External IP
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    eventSource="iam.amazonaws.com"
+    eventName="CreateUser"
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| where NOT (cidrmatch("10.0.0.0/8", sourceIPAddress))
+| eval new_user=requestParameters.userName
+| eval attk_technique="T1136.003"
+| eval severity="Critical"
+| table _time, sourceIPAddress, new_user,
+        userIdentity.type, severity, attk_technique
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY CT-2B: IAM Persistence Chain (Create → Attach → Key)
+| 3-step attacker IAM backdoor sequence
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    eventSource="iam.amazonaws.com"
+    eventName IN ("CreateUser","AttachUserPolicy","CreateAccessKey",
+                  "CreateRole","PutUserPolicy")
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| where NOT (cidrmatch("10.0.0.0/8", sourceIPAddress))
+| bucket span=10m _time
+| stats count as iam_mod_count, values(eventName) as actions,
+        values(requestParameters.userName) as target_users
+    by sourceIPAddress, _time
+| where iam_mod_count >= 2
+| eval attk_technique="T1136.003,T1098.001"
+| eval alert="IAM modification chain: " + mvjoin(actions, " → ")
+| table _time, sourceIPAddress, iam_mod_count, actions, target_users, alert
+
+
+| -------------------------------------------------------------------------
+| QUERY CT-2C: Cross-Account Role Trust Policies (Backdoor Roles)
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    eventSource="iam.amazonaws.com"
+    eventName="CreateRole"
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| eval trust_policy=spath(requestParameters, "assumeRolePolicyDocument")
+| where like(trust_policy, "%987654321099%")  // External account ID
+    OR like(trust_policy, "%\"Principal\": \"*\"%")  // Wildcard principal
+| eval attk_technique="T1078.004"
+| eval severity="Critical"
+| eval alert="Cross-account backdoor role — trust to external AWS account"
+| table _time, sourceIPAddress, requestParameters.roleName,
+        trust_policy, severity, alert
+
+
+| =========================================================================
+| H3 — SECRETS MANAGER ACCESS (T1555.006)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CT-3: GetSecretValue from External IP
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    eventSource="secretsmanager.amazonaws.com"
+    eventName="GetSecretValue"
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| where NOT (cidrmatch("10.0.0.0/8", sourceIPAddress))
+| eval secret_name=requestParameters.secretId
+| eval attk_technique="T1555.006"
+| eval severity="Critical"
+| eval risk=case(
+    like(secret_name, "%bloomberg%"), "CRITICAL: Bloomberg API key harvested",
+    like(secret_name, "%rds%") OR like(secret_name, "%db%"), "CRITICAL: DB credentials harvested",
+    like(secret_name, "%trading%") OR like(secret_name, "%execution%"), "CRITICAL: Trading API key",
+    "HIGH: Unknown secret accessed"
+  )
+| table _time, sourceIPAddress, secret_name, risk, attk_technique
+| sort _time
+
+
+| =========================================================================
+| H4 — S3 DATA EXFILTRATION (T1530)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CT-4A: GetObject from External IP with Byte Count
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    eventSource="s3.amazonaws.com"
+    eventName="GetObject"
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| where NOT (cidrmatch("10.0.0.0/8", sourceIPAddress))
+| eval bytes_out=tonumber('additionalEventData.bytesTransferredOut')
+| eval mb_out=round(bytes_out/1048576, 1)
+| eval bucket=requestParameters.bucketName
+| eval object_key=requestParameters.key
+| stats sum(mb_out) as total_mb, count as get_count,
+        values(object_key) as objects_accessed
+    by sourceIPAddress, bucket
+| where total_mb > 1
+| eval attk_technique="T1530"
+| eval severity=case(total_mb>50,"Critical", total_mb>10,"High", "Medium")
+| table sourceIPAddress, bucket, total_mb, get_count,
+        objects_accessed, severity, attk_technique
+| sort -total_mb
+
+
+| =========================================================================
+| H5 — EC2 COMPUTE ABUSE (T1578)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CT-5: GPU Instance Launch from External IP (Mining Pattern)
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    eventSource="ec2.amazonaws.com"
+    eventName="RunInstances"
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| where NOT (cidrmatch("10.0.0.0/8", sourceIPAddress))
+| eval instance_type=requestParameters.instanceType
+| eval mining_indicator=if(
+    instance_type IN ("p3.8xlarge","p3.16xlarge","p4d.24xlarge",
+                       "g4dn.12xlarge","g4dn.metal","g5.48xlarge"),
+    "HIGH — GPU instance; crypto mining pattern",
+    "MEDIUM — unusual external launch"
+  )
+| eval attk_technique="T1578"
+| table _time, sourceIPAddress, instance_type, mining_indicator,
+        requestParameters.minCount, requestParameters.maxCount, attk_technique
+| sort -_time
+
+
+| =========================================================================
+| H6 — CLOUDTRAIL/GUARDDUTY TAMPERING (T1562.008)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CT-6: CloudTrail and GuardDuty Tampering
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    (eventSource="cloudtrail.amazonaws.com" AND
+     eventName IN ("StopLogging","DeleteTrail","UpdateTrail","PutEventSelectors"))
+OR
+    (eventSource="guardduty.amazonaws.com" AND
+     eventName IN ("UpdateDetector","DeleteDetector","DisassociateFromMasterAccount",
+                    "CreateFilter","UpdateFilter"))
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| eval attk_technique="T1562.008"
+| eval severity="Critical"
+| eval impact=case(
+    eventName="StopLogging", "CloudTrail logging STOPPED — evidence destruction",
+    eventName="DeleteTrail", "CloudTrail trail DELETED — permanent evidence loss",
+    eventName="UpdateDetector" AND requestParameters.enable="false",
+    "GuardDuty DISABLED — detection blind spot created",
+    eventName="DeleteDetector", "GuardDuty DELETED — all detection removed",
+    "Security control modified"
+  )
+| table _time, sourceIPAddress, eventSource, eventName,
+        impact, severity, attk_technique
+| sort _time
+
+
+| =========================================================================
+| CORRELATION — FULL CLOUD ATTACK TIMELINE
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CORR: Attacker Activity Timeline (All Phases)
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+    sourceIPAddress="198.51.100.99"
+    earliest="2026-06-14T00:00:00" latest="2026-06-21T00:00:00"
+| eval attk_phase=case(
+    eventName="GetCallerIdentity", "P0: Verify Credential",
+    eventName IN ("ListBuckets","ListUsers","ListRoles","ListSecrets",
+                  "DescribeInstances"), "P1: Enumeration",
+    eventName="AssumeRole", "P2: Privilege Escalation",
+    eventName IN ("StopLogging","UpdateDetector"), "P3: Defense Evasion",
+    eventName="GetSecretValue", "P4: Credential Harvest",
+    eventName="GetObject", "P5: Data Exfiltration",
+    eventName IN ("CreateUser","AttachUserPolicy","CreateRole",
+                  "CreateAccessKey"), "P6: Persistence",
+    eventName="RunInstances", "P7: Resource Abuse",
+    "Other"
+  )
+| table _time, attk_phase, eventName, eventSource,
+        requestParameters, errorCode
+| sort _time
