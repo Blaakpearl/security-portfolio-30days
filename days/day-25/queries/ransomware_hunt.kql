@@ -1,0 +1,200 @@
+// =========================================================================
+// Day 25 — Sentinel KQL: Ransomware Detection & Forensic Timeline
+// NovaCrest Capital Group | Case NCA-2026-06-R
+// =========================================================================
+
+let IncidentStart = datetime(2026-06-19T03:00:00Z);
+let IncidentEnd   = datetime(2026-06-19T07:00:00Z);
+let TargetHost    = "SRV-FS-01";
+
+// Simulated Sysmon events for demo
+let SysmonEvents = datatable(
+    TimeGenerated: datetime, EventID: int, Host: string,
+    Image: string, ParentImage: string, CommandLine: string,
+    TargetFilename: string, EventType: string
+)[
+    datetime(2026-06-19T03:22:45Z),1,"SRV-FS-01",
+    "C:\\Windows\\Temp\\svchost32.exe","C:\\Windows\\System32\\WmiPrvSE.exe",
+    "C:\\Windows\\Temp\\svchost32.exe --encrypt --threads 24 --shares C:\\Shares\\","","start",
+    datetime(2026-06-19T03:23:01Z),1,"SRV-FS-01",
+    "C:\\Windows\\System32\\cmd.exe","C:\\Windows\\Temp\\svchost32.exe",
+    "cmd.exe /c sc stop WinDefend","","start",
+    datetime(2026-06-19T03:23:15Z),1,"SRV-FS-01",
+    "C:\\Windows\\System32\\vssadmin.exe","C:\\Windows\\System32\\cmd.exe",
+    "vssadmin delete shadows /all /quiet","","start",
+    datetime(2026-06-19T03:23:22Z),1,"SRV-FS-01",
+    "C:\\Windows\\System32\\wbadmin.exe","C:\\Windows\\System32\\cmd.exe",
+    "wbadmin delete catalog -quiet","","start",
+    datetime(2026-06-19T03:23:29Z),1,"SRV-FS-01",
+    "C:\\Windows\\System32\\bcdedit.exe","C:\\Windows\\System32\\cmd.exe",
+    "bcdedit /set {default} recoveryenabled No","","start",
+    datetime(2026-06-19T03:24:05Z),11,"SRV-FS-01",
+    "","","","C:\\Shares\\Finance\\Q1_2026_client_balances.xlsx.ncrypt","filecreate",
+    datetime(2026-06-19T06:11:44Z),11,"SRV-FS-01",
+    "","","","C:\\Shares\\Finance\\!!READ_ME_NOW!!.txt","filecreate",
+];
+
+
+// =========================================================================
+// DETECTION — RANSOMWARE INDICATORS
+// =========================================================================
+
+// KQL-R-1: Shadow Copy / Recovery Destruction (T1490) — Immediate Alert
+SysmonEvents
+| where TimeGenerated between (IncidentStart .. IncidentEnd)
+| where EventID == 1
+| where CommandLine has_any ("vssadmin delete shadows",
+                              "wbadmin delete catalog",
+                              "bcdedit /set {default} recoveryenabled",
+                              "wmic shadowcopy delete")
+| extend Technique = "T1490"
+| extend Severity = "Critical"
+| extend Alert = strcat("Recovery destruction: ", CommandLine)
+| project TimeGenerated, Host, Image, CommandLine, Severity, Alert, Technique
+| order by TimeGenerated asc
+
+
+// KQL-R-2: Mass File Rename to Ransomware Extension (T1486)
+SysmonEvents
+| where TimeGenerated between (IncidentStart .. IncidentEnd)
+| where EventID == 11
+| where TargetFilename endswith ".ncrypt"
+       or TargetFilename endswith ".locked"
+       or TargetFilename endswith ".encrypted"
+| summarize FileCount = count(), SampleFiles = make_set(TargetFilename, 5)
+    by Host, bin(TimeGenerated, 1m)
+| where FileCount >= 20
+| extend Severity = case(FileCount > 500, "Critical",
+                         FileCount > 100, "High", "Medium")
+| extend Alert = strcat(FileCount, " files encrypted in 1 min — ransomware in progress")
+| extend Technique = "T1486"
+| project TimeGenerated, Host, FileCount, SampleFiles, Severity, Alert, Technique
+| order by FileCount desc
+
+
+// KQL-R-3: Ransom Note File Creation
+SysmonEvents
+| where TimeGenerated between (IncidentStart .. IncidentEnd)
+| where EventID == 11
+| where TargetFilename contains "READ_ME"
+        or TargetFilename contains "DECRYPT"
+        or TargetFilename contains "RESTORE"
+        or TargetFilename contains "HOW_TO"
+        or TargetFilename contains "RECOVER"
+| extend Technique = "T1486"
+| extend Severity = "Critical"
+| extend Alert = strcat("Ransom note created: ", TargetFilename)
+| project TimeGenerated, Host, TargetFilename, Severity, Alert, Technique
+| order by TimeGenerated asc
+
+
+// KQL-R-4: Security Tool Disabled Pre-Encryption (T1562.001)
+SysmonEvents
+| where TimeGenerated between (IncidentStart .. IncidentEnd)
+| where EventID == 1
+| where CommandLine has_any ("sc stop WinDefend",
+                              "sc config WinDefend start= disabled",
+                              "Set-MpPreference -DisableRealtimeMonitoring")
+| extend Technique = "T1562.001"
+| extend Severity = "Critical"
+| extend Alert = "Windows Defender disabled — ransomware pre-encryption evasion"
+| project TimeGenerated, Host, Image, CommandLine, Severity, Alert, Technique
+
+
+// KQL-R-5: WMI Spawning Executable from Temp Path (T1047 + T1486)
+SysmonEvents
+| where TimeGenerated between (IncidentStart .. IncidentEnd)
+| where EventID == 1
+| where ParentImage endswith "WmiPrvSE.exe"
+| where Image contains "Temp" or Image contains "ProgramData" or Image contains "Public"
+| where not (Image contains "WindowsApps" or Image contains "Edge")
+| extend Technique = "T1047,T1486"
+| extend Severity = "Critical"
+| extend Alert = strcat("WMI remote execution from temp path: ", Image)
+| project TimeGenerated, Host, ParentImage, Image, CommandLine, Severity, Alert, Technique
+
+
+// =========================================================================
+// FORENSIC TIMELINE
+// =========================================================================
+
+// KQL-T-1: Reconstructed Attack Timeline with Phase Labels
+SysmonEvents
+| where TimeGenerated between (IncidentStart .. IncidentEnd)
+| extend Phase = case(
+    EventID == 11 and TargetFilename endswith ".exe" and
+        TargetFilename contains "Temp", "2. Ransomware Staging",
+    EventID == 1 and CommandLine contains "WinDefend", "3. AV Disabled",
+    EventID == 1 and CommandLine contains "vssadmin", "4. VSS Destroyed",
+    EventID == 1 and CommandLine contains "bcdedit", "4. Recovery Disabled",
+    EventID == 1 and CommandLine contains "--encrypt", "5. Encryption Launched",
+    EventID == 11 and TargetFilename endswith ".ncrypt", "6. Encryption Active",
+    EventID == 11 and TargetFilename contains "READ_ME", "7. Ransom Note Dropped",
+    "Other"
+  )
+| extend Technique = case(
+    Phase contains "Staging", "T1105",
+    Phase contains "AV", "T1562.001",
+    Phase contains "VSS", "T1490",
+    Phase contains "Recovery", "T1490",
+    Phase contains "Encryption", "T1486",
+    Phase contains "Ransom", "T1486",
+    "—"
+  )
+| where Phase != "Other"
+| project TimeGenerated, Phase, Technique, Host, Image, CommandLine, TargetFilename
+| order by TimeGenerated asc
+
+
+// =========================================================================
+// SCOPE ASSESSMENT
+// =========================================================================
+
+// KQL-S-1: Encryption Scope by Directory (Top Affected Areas)
+SysmonEvents
+| where TimeGenerated between (IncidentStart .. IncidentEnd)
+| where EventID == 11 and TargetFilename endswith ".ncrypt"
+| extend Directory = extract(@"^(.+\\)[^\\]+$", 1, TargetFilename)
+| extend ShareName = extract(@"^C:\\Shares\\([^\\]+)", 1, TargetFilename)
+| summarize EncryptedCount = count() by ShareName, Host
+| extend SeverityLabel = case(EncryptedCount > 10000, "🔴 Critical",
+                              EncryptedCount > 5000,  "🟠 High",
+                              "🟡 Medium")
+| project ShareName, EncryptedCount, SeverityLabel, Host
+| order by EncryptedCount desc
+
+
+// KQL-S-2: Encryption Timeline (Files per Minute Trend)
+SysmonEvents
+| where TimeGenerated between (IncidentStart .. IncidentEnd)
+| where EventID == 11 and TargetFilename endswith ".ncrypt"
+| summarize FilesPerMinute = count() by bin(TimeGenerated, 1m), Host
+| extend EncryptionPhase = case(
+    FilesPerMinute > 500, "Peak (>500 files/min)",
+    FilesPerMinute > 100, "Active (100-500 files/min)",
+    FilesPerMinute > 0,   "Starting (<100 files/min)",
+    "None"
+  )
+| project TimeGenerated, Host, FilesPerMinute, EncryptionPhase
+| order by TimeGenerated asc
+
+
+// =========================================================================
+// PREVENTION — DETECTION RULES TO DEPLOY
+// =========================================================================
+
+// KQL-PREVENT-1: VSS Deletion Alert (Deploy as Sentinel Analytics Rule)
+// Run frequency: Every 5 minutes | Lookback: 5 minutes
+SecurityEvent
+| where TimeGenerated > ago(5m)
+| where EventID == 4688
+| where CommandLine has_any (
+    "vssadmin delete shadows",
+    "wmic shadowcopy delete",
+    "wbadmin delete catalog"
+  )
+| extend Severity = "Critical"
+| extend TacticName = "Defense Evasion"
+| extend TechniqueName = "T1490 — Inhibit System Recovery"
+| project TimeGenerated, Computer, SubjectUserName,
+          NewProcessName, CommandLine, Severity, TacticName, TechniqueName

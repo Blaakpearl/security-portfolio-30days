@@ -1,0 +1,192 @@
+| =========================================================================
+| Day 25 — Splunk SPL: Ransomware Detection & Timeline Queries
+| NovaCrest Capital Group | Case NCA-2026-06-R
+| =========================================================================
+| Indexes:
+|   index=wineventlog  Windows Security + System Events
+|   index=sysmon       Sysmon Operational Events
+|   index=zeek_conn    Zeek network connections
+| =========================================================================
+
+
+| =========================================================================
+| DETECTION — RANSOMWARE ACTIVITY
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY R-1: Shadow Copy and Recovery Deletion (T1490) — Fastest Detection
+| -------------------------------------------------------------------------
+index=sysmon EventCode=1
+    (CommandLine="*vssadmin*delete*shadows*"
+  OR CommandLine="*wbadmin*delete*catalog*"
+  OR CommandLine="*bcdedit*/set*recoveryenabled*No*"
+  OR CommandLine="*wmic*shadowcopy*delete*")
+| eval attk_technique="T1490"
+| eval severity="Critical"
+| eval alert="Ransomware anti-recovery: " + CommandLine
+| table _time, host, ParentImage, Image, CommandLine, severity, alert, attk_technique
+| sort _time
+
+
+| -------------------------------------------------------------------------
+| QUERY R-2: Mass File Rename / Extension Change (T1486)
+| High volume = encryption in progress
+| -------------------------------------------------------------------------
+index=sysmon EventCode=11
+| eval new_ext=replace(TargetFilename, ".*\.", ".")
+| where new_ext=".ncrypt" OR new_ext=".locked" OR new_ext=".enc"
+    OR new_ext=".encrypted" OR new_ext=".crypt"
+| bucket span=1m _time
+| stats count as file_renames, values(TargetFilename) as sample_files
+    by host, new_ext, _time
+| where file_renames >= 20
+| eval attk_technique="T1486"
+| eval severity=case(file_renames>500,"Critical", file_renames>100,"High", "Medium")
+| eval alert=tostring(file_renames) + " files renamed to " + new_ext + " in 1 minute"
+| table _time, host, new_ext, file_renames, sample_files, severity, alert
+
+
+| -------------------------------------------------------------------------
+| QUERY R-3: Ransom Note File Creation (T1486)
+| -------------------------------------------------------------------------
+index=sysmon EventCode=11
+    (TargetFilename="*!!READ_ME*"
+  OR TargetFilename="*_DECRYPT*"
+  OR TargetFilename="*_RESTORE*"
+  OR TargetFilename="*HOW_TO_DECRYPT*"
+  OR TargetFilename="*RECOVER_FILES*"
+  OR TargetFilename="*README_DECRYPT*")
+| eval attk_technique="T1486"
+| eval severity="Critical"
+| eval alert="Ransom note created: " + TargetFilename
+| table _time, host, Image, TargetFilename, severity, alert, attk_technique
+| sort _time
+
+
+| -------------------------------------------------------------------------
+| QUERY R-4: Security Tool Disabling Pre-Encryption (T1562.001)
+| -------------------------------------------------------------------------
+(index=wineventlog EventCode=7036
+    param1="Windows Defender Antivirus Service" param2="stopped")
+OR
+(index=sysmon EventCode=1
+    CommandLine="*sc*stop*WinDefend*"
+    OR CommandLine="*sc*config*WinDefend*start=*disabled*")
+| eval attk_technique="T1562.001"
+| eval severity="Critical"
+| eval alert="Windows Defender stopped — ransomware pre-encryption evasion"
+| table _time, host, Image, CommandLine, param1, param2, attk_technique
+| sort _time
+
+
+| -------------------------------------------------------------------------
+| QUERY R-5: Ransomware Process Heuristic (Name Masquerade + WMI Parent)
+| -------------------------------------------------------------------------
+index=sysmon EventCode=1
+    ParentImage="*WmiPrvSE.exe"
+    (Image="*Temp*" OR Image="*ProgramData*" OR Image="*Public*")
+| where NOT (Image LIKE "%WindowsApps%"
+          OR Image LIKE "%MicrosoftEdge%")
+| eval attk_technique="T1047,T1486"
+| eval severity="Critical"
+| eval alert="WMI spawning executable from temp path — possible ransomware execution"
+| table _time, host, ParentImage, Image, CommandLine, severity, alert
+
+
+| =========================================================================
+| TIMELINE RECONSTRUCTION
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY T-1: Full Ransomware Attack Timeline (All Sources)
+| -------------------------------------------------------------------------
+(index=wineventlog (EventCode=4648 OR EventCode=4624)
+ earliest="2026-06-19T03:00:00" latest="2026-06-19T07:00:00"
+ | eval phase="Lateral Movement" | eval technique="T1550.002")
+
+UNION
+
+(index=sysmon EventCode=11
+ earliest="2026-06-19T03:00:00" latest="2026-06-19T07:00:00"
+ TargetFilename="*svchost32.exe"
+ | eval phase="Staging" | eval technique="T1105")
+
+UNION
+
+(index=sysmon EventCode=1
+ earliest="2026-06-19T03:00:00" latest="2026-06-19T07:00:00"
+ CommandLine="*WinDefend*"
+ | eval phase="Defense Evasion" | eval technique="T1562.001")
+
+UNION
+
+(index=sysmon EventCode=1
+ earliest="2026-06-19T03:00:00" latest="2026-06-19T07:00:00"
+ CommandLine="*vssadmin*"
+ | eval phase="Defense Evasion" | eval technique="T1490")
+
+UNION
+
+(index=sysmon EventCode=11
+ earliest="2026-06-19T03:00:00" latest="2026-06-19T07:00:00"
+ TargetFilename="*.ncrypt"
+ | head 1
+ | eval phase="Encryption Start" | eval technique="T1486")
+
+UNION
+
+(index=sysmon EventCode=11
+ earliest="2026-06-19T06:00:00" latest="2026-06-19T07:00:00"
+ TargetFilename="*!!READ_ME_NOW!!*"
+ | head 1
+ | eval phase="Ransom Note Drop" | eval technique="T1486")
+
+| eval ts_utc=strftime(_time, "%Y-%m-%d %H:%M:%S UTC")
+| table ts_utc, phase, technique, host, source, _raw
+| sort _time
+
+
+| -------------------------------------------------------------------------
+| QUERY T-2: Encryption Rate (Files per Minute)
+| Visualize encryption speed for impact reporting
+| -------------------------------------------------------------------------
+index=sysmon EventCode=11
+    TargetFilename="*.ncrypt"
+    earliest="2026-06-19T03:00:00" latest="2026-06-19T07:00:00"
+| bucket span=1m _time
+| stats count as files_encrypted_per_min by _time, host
+| where files_encrypted_per_min > 0
+| eval encryption_rate_note=case(
+    files_encrypted_per_min > 500, "Critical — peak encryption rate",
+    files_encrypted_per_min > 100, "High — active encryption",
+    "Active"
+  )
+| table _time, host, files_encrypted_per_min, encryption_rate_note
+
+
+| =========================================================================
+| SCOPE ASSESSMENT
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY S-1: Encrypted File Count and Volume by Share
+| -------------------------------------------------------------------------
+index=sysmon EventCode=11
+    TargetFilename="*.ncrypt"
+| rex field=TargetFilename "(?P<share>C:\\\\[^\\\\]+\\\\[^\\\\]+)"
+| stats count as encrypted_count by share, host
+| eval share_name=replace(share, "C:\\\\", "\\\\SRV-FS-01\\")
+| sort -encrypted_count
+
+
+| -------------------------------------------------------------------------
+| QUERY S-2: Ransom Note Directory Count (Impact Breadth)
+| -------------------------------------------------------------------------
+index=sysmon EventCode=11
+    TargetFilename="*!!READ_ME_NOW!!*"
+| rex field=TargetFilename "(?P<directory>.*\\\\)[^\\\\]+$"
+| stats dc(directory) as directories_with_note, count as total_notes
+    by host
+| eval severity="Critical"
+| eval impact=tostring(directories_with_note) + " directories affected — encryption breadth"
+| table host, directories_with_note, total_notes, impact
