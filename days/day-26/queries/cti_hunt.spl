@@ -1,0 +1,169 @@
+| =========================================================================
+| Day 26 — Splunk SPL: Threat Intelligence IOC Matching & CTI Hunt
+| NovaCrest Capital Group | FIN-NC-001 Actor Intelligence
+| =========================================================================
+| Purpose: Match live environment telemetry against FIN-NC-001 IOC set
+|          and detect TTPs consistent with the actor's known playbook.
+| =========================================================================
+
+
+| =========================================================================
+| IOC FEED MATCHING
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CTI-1: IP Reputation Feed Match (All Traffic → Known Bad IPs)
+| -------------------------------------------------------------------------
+| inputlookup fin_nc_001_iocs.csv
+    | where ioc_type="ipv4"
+    | eval known_bad_ip=ioc_value
+| join type=inner known_bad_ip [
+    search index=zeek_conn sourcetype=zeek:conn
+    | rename id.resp_h as known_bad_ip
+    | stats count as connection_count, sum(orig_bytes) as bytes_out,
+            values(id.orig_h) as source_hosts, values(id.resp_p) as ports
+        by known_bad_ip
+]
+| eval mb_out=round(bytes_out/1048576, 2)
+| eval severity="Critical"
+| eval alert="FIN-NC-001 C2 IP detected in live traffic: " + known_bad_ip
+| table known_bad_ip, connection_count, mb_out, source_hosts, ports, severity, alert
+
+
+| -------------------------------------------------------------------------
+| QUERY CTI-2: Domain IOC Match (DNS + HTTP logs)
+| -------------------------------------------------------------------------
+| inputlookup fin_nc_001_iocs.csv
+    | where ioc_type="domain"
+    | eval known_bad_domain=ioc_value
+| join type=inner known_bad_domain [
+    search index=zeek_dns sourcetype=zeek:dns
+    | rename query as known_bad_domain
+    | stats count as dns_queries, dc(id.orig_h) as unique_hosts,
+            values(answers) as resolved_ips by known_bad_domain
+]
+| eval alert="FIN-NC-001 domain seen in DNS: " + known_bad_domain
+| table known_bad_domain, dns_queries, unique_hosts, resolved_ips, alert
+
+
+| -------------------------------------------------------------------------
+| QUERY CTI-3: File Hash IOC Match (EDR + AV Detections)
+| -------------------------------------------------------------------------
+| inputlookup fin_nc_001_iocs.csv
+    | where ioc_type="sha256"
+    | eval known_hash=ioc_value
+| join type=inner known_hash [
+    search index=endpoint sourcetype=crowdstrike:events
+    | eval known_hash=SHA256HashData
+    | stats count, values(FileName) as filename,
+            values(ComputerName) as hosts by known_hash
+]
+| eval severity="Critical"
+| eval alert="FIN-NC-001 ransomware binary detected on endpoint"
+| table known_hash, filename, hosts, severity, alert
+
+
+| -------------------------------------------------------------------------
+| QUERY CTI-4: Email IOC Match (Phishing + Ransom Contact)
+| -------------------------------------------------------------------------
+| inputlookup fin_nc_001_iocs.csv
+    | where ioc_type="email"
+    | eval known_email=ioc_value
+| join type=inner known_email [
+    search index=email sourcetype=o365:management:activity
+        Operation IN ("Send","Receive")
+    | eval known_email=if(Operation="Send", SenderAddress, RecipientAddress)
+    | stats count, values(Subject) as subjects, values(Operation) as ops
+        by known_email
+]
+| eval alert="FIN-NC-001 actor email contact detected: " + known_email
+| table known_email, count, subjects, ops, alert
+
+
+| =========================================================================
+| TTP-BASED THREAT HUNT (Actor Playbook Matching)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CTI-5: FIN-NC-001 Initial Access Pattern (T1566.001)
+| Conference-themed spearphishing with Office attachment
+| -------------------------------------------------------------------------
+index=email sourcetype="o365:management:activity" Operation="Receive"
+| eval has_attachment=if(like(Attachments, "%xlsx%") OR like(Attachments, "%docx%")
+                      OR like(Attachments, "%xls%"), 1, 0)
+| eval conference_lure=if(
+    like(Subject, "%summit%") OR like(Subject, "%conference%")
+    OR like(Subject, "%webinar%") OR like(Subject, "%follow-up%")
+    OR like(Subject, "%strategy%") OR like(Subject, "%investment%"),
+    1, 0
+  )
+| where has_attachment=1 AND conference_lure=1
+| eval attk_technique="T1566.001"
+| eval alert="Conference-themed spearphishing with attachment — FIN-NC-001 pattern"
+| stats count, values(Subject) as subjects, values(SenderAddress) as senders,
+        values(RecipientAddress) as recipients by _time, attk_technique, alert
+| where count >= 1
+
+
+| -------------------------------------------------------------------------
+| QUERY CTI-6: FIN-NC-001 Cloud Credential Enumeration Pattern (T1526)
+| Matches attacker enumeration burst (8+ discovery calls in 5 min)
+| -------------------------------------------------------------------------
+index=cloudtrail sourcetype=aws:cloudtrail
+| where NOT (cidrmatch("10.0.0.0/8", sourceIPAddress))
+| where eventName IN ("GetCallerIdentity","ListUsers","ListRoles","ListBuckets",
+                      "DescribeInstances","ListSecrets","ListFunctions")
+| bucket span=5m _time
+| stats count as api_calls, dc(eventName) as unique_actions,
+        values(eventName) as actions
+    by sourceIPAddress, _time
+| where api_calls >= 5 AND unique_actions >= 3
+| eval attk_technique="T1526"
+| eval alert="Cloud enumeration burst — matches FIN-NC-001 pre-attack pattern"
+| table _time, sourceIPAddress, api_calls, unique_actions, actions, alert
+
+
+| -------------------------------------------------------------------------
+| QUERY CTI-7: FIN-NC-001 Lateral Movement Pattern (T1550.002 + T1021.002)
+| Pass-the-Ticket followed by SMB lateral movement
+| -------------------------------------------------------------------------
+index=wineventlog (EventCode=4648 OR EventCode=4624)
+| eval is_ptt=if(EventCode=4648 AND AuthenticationPackageName="Kerberos", 1, 0)
+| eval is_smb_lateral=if(EventCode=4624 AND LogonType=3 AND
+                          AuthenticationPackageName="Kerberos", 1, 0)
+| eval is_unusual_source=if(
+    NOT (cidrmatch("10.0.1.0/24", IpAddress) OR
+         cidrmatch("10.0.2.0/24", IpAddress)),
+    1, 0
+  )
+| where (is_ptt=1 OR is_smb_lateral=1) AND is_unusual_source=1
+| eval attk_technique=if(is_ptt=1, "T1550.002", "T1021.002")
+| stats count, values(TargetUserName) as users, values(IpAddress) as src_ips
+    by _time, host, attk_technique
+| eval alert="Lateral movement pattern matches FIN-NC-001 playbook"
+| where count >= 2
+
+
+| =========================================================================
+| THREAT INTELLIGENCE DASHBOARD — Actor Activity Summary
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY CTI-8: FIN-NC-001 IOC Hit Summary (All Sources, Last 30 Days)
+| -------------------------------------------------------------------------
+| union
+    [search index=zeek_conn id.resp_h="198.51.100.99" earliest=-30d@d
+     | eval ioc="C2 IP: 198.51.100.99" | eval source="Network (Zeek)"]
+    [search index=cloudtrail sourceIPAddress="198.51.100.99" earliest=-30d@d
+     | eval ioc="C2 IP: 198.51.100.99" | eval source="Cloud (CloudTrail)"]
+    [search index=endpoint SHA256HashData="a4b3c2d1e0f9*" earliest=-30d@d
+     | eval ioc="Ransomware Hash" | eval source="Endpoint (EDR)"]
+    [search index=email SenderAddress="*ncrypt-support*" earliest=-30d@d
+     | eval ioc="Actor Email" | eval source="Email"]
+| stats count as hit_count, dc(host) as hosts_affected,
+        min(_time) as first_hit, max(_time) as last_hit
+    by ioc, source
+| eval first_hit_str=strftime(first_hit, "%Y-%m-%d %H:%M UTC")
+| eval last_hit_str=strftime(last_hit, "%Y-%m-%d %H:%M UTC")
+| table ioc, source, hit_count, hosts_affected, first_hit_str, last_hit_str
+| sort -hit_count

@@ -1,0 +1,193 @@
+// =========================================================================
+// Day 26 — Sentinel KQL: CTI IOC Matching & Threat Actor Hunt
+// NovaCrest Capital Group | FIN-NC-001 Threat Intelligence
+// =========================================================================
+
+// FIN-NC-001 IOC Reference Table
+let FIN_NC_001_IPs = dynamic(["198.51.100.99"]);
+let FIN_NC_001_Domains = dynamic([
+    "trading-updates.novacrest-secure.com",
+    "updates-cdn.financialdata.net",
+    "telemetry.marketsync.io"
+]);
+let FIN_NC_001_Hashes = dynamic([
+    "a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3"
+]);
+let FIN_NC_001_Emails = dynamic([
+    "ncrypt-support@protonmail.com"
+]);
+let FIN_NC_001_JA3 = dynamic([
+    "a0e9f5d64349fb13191bc781f81f42e1",
+    "f4febc55ea12b31ae17cfb7e614afda8"
+]);
+let LookbackDays = 30d;
+
+
+// =========================================================================
+// IOC FEED MATCHING
+// =========================================================================
+
+// KQL-CTI-1: C2 IP Match in Network Traffic
+CommonSecurityLog
+| where TimeGenerated > ago(LookbackDays)
+| where DestinationIP in (FIN_NC_001_IPs)
+    or SourceIP in (FIN_NC_001_IPs)
+| extend MatchType = "FIN-NC-001 C2 IP"
+| extend Severity = "Critical"
+| extend Technique = "T1071.001"
+| summarize ConnectionCount = count(),
+            BytesOut = sum(SentBytes),
+            AffectedHosts = make_set(SourceIP)
+    by DestinationIP, MatchType, Severity, Technique
+| extend MBOut = round(toreal(BytesOut) / 1048576.0, 1)
+| extend Alert = strcat("FIN-NC-001 C2 IP in live traffic: ", DestinationIP, " (", MBOut, " MB)")
+| project DestinationIP, ConnectionCount, MBOut, AffectedHosts, Severity, Alert, Technique
+| order by ConnectionCount desc
+
+
+// KQL-CTI-2: Domain IOC Match in DNS Logs
+DnsEvents
+| where TimeGenerated > ago(LookbackDays)
+| where Name in (FIN_NC_001_Domains)
+| extend MatchType = "FIN-NC-001 Actor Domain"
+| extend Severity = "Critical"
+| extend Technique = "T1566.001"
+| summarize DNSQueryCount = count(),
+            UniqueHosts = dcount(Computer),
+            ResolvedIPs = make_set(IPAddresses)
+    by Name, MatchType, Severity, Technique
+| extend Alert = strcat("FIN-NC-001 phishing domain seen in DNS: ", Name)
+| project Name, DNSQueryCount, UniqueHosts, ResolvedIPs, Severity, Alert, Technique
+
+
+// KQL-CTI-3: File Hash Match (EDR Telemetry)
+DeviceFileEvents
+| where TimeGenerated > ago(LookbackDays)
+| where SHA256 in (FIN_NC_001_Hashes)
+| extend MatchType = "FIN-NC-001 Ransomware Hash"
+| extend Severity = "Critical"
+| extend Technique = "T1486"
+| project TimeGenerated, DeviceName, FileName, FolderPath, SHA256,
+          MatchType, Severity, Technique,
+          Alert = strcat("ncrypt ransomware binary detected: ", FileName, " on ", DeviceName)
+| order by TimeGenerated desc
+
+
+// KQL-CTI-4: JA3 TLS Fingerprint Match
+// (Requires Zeek or network sensor ingesting TLS metadata)
+CommonSecurityLog
+| where TimeGenerated > ago(LookbackDays)
+| extend JA3Hash = extract("ja3=([a-f0-9]{32})", 1, AdditionalExtensions)
+| where JA3Hash in (FIN_NC_001_JA3)
+| extend MatchType = case(
+    JA3Hash == "a0e9f5d64349fb13191bc781f81f42e1", "Sliver C2 JA3",
+    JA3Hash == "f4febc55ea12b31ae17cfb7e614afda8", "Havoc C2 JA3",
+    "Unknown C2 JA3"
+  )
+| extend Severity = "Critical"
+| extend Technique = "T1071.001"
+| project TimeGenerated, SourceIP, DestinationIP, JA3Hash, MatchType, Severity, Technique
+| order by TimeGenerated desc
+
+
+// =========================================================================
+// TTP-BASED HUNT (FIN-NC-001 Playbook)
+// =========================================================================
+
+// KQL-CTI-5: Initial Access Pattern — Conference Spearphishing (T1566.001)
+OfficeActivity
+| where TimeGenerated > ago(LookbackDays)
+| where Operation in ("Send", "Receive")
+| where Attachments has_any (".xlsx", ".docx", ".xls", ".doc", ".xlsm")
+| where Subject has_any ("summit", "conference", "webinar", "follow-up",
+                          "strategy", "investment", "fintech", "forum")
+| extend Technique = "T1566.001"
+| extend Severity = "High"
+| extend ActorPattern = "FIN-NC-001 initial access pattern — conference spearphish"
+| project TimeGenerated, UserId, Subject, Attachments,
+          Technique, Severity, ActorPattern
+| order by TimeGenerated desc
+
+
+// KQL-CTI-6: Cloud Enumeration Burst (T1526) — Pre-Attack Reconnaissance
+AWSCloudTrail
+| where TimeGenerated > ago(LookbackDays)
+| where not (SourceIpAddress startswith "10." or
+             SourceIpAddress startswith "172.16." or
+             SourceIpAddress startswith "192.168.")
+| where EventName in ("GetCallerIdentity","ListUsers","ListRoles","ListBuckets",
+                       "DescribeInstances","ListSecrets","ListFunctions","ListModels")
+| summarize APICallCount = count(),
+            UniqueActions = dcount(EventName),
+            Actions = make_set(EventName)
+    by SourceIpAddress, bin(TimeGenerated, 5m)
+| where APICallCount >= 5 and UniqueActions >= 3
+| extend Technique = "T1526"
+| extend Severity = "High"
+| extend Alert = strcat("Cloud enumeration burst (", APICallCount, " calls, ",
+                         UniqueActions, " unique actions) — FIN-NC-001 pre-attack pattern")
+| project TimeGenerated, SourceIpAddress, APICallCount, UniqueActions,
+          Actions, Alert, Technique, Severity
+
+
+// KQL-CTI-7: Anti-Recovery Commands — Ransomware Imminent (T1490)
+// Deploy as Sentinel Analytics Rule — run every 5 min
+SecurityEvent
+| where TimeGenerated > ago(5m)
+| where EventID == 4688
+| where CommandLine has_any (
+    "vssadmin delete shadows",
+    "wmic shadowcopy delete",
+    "wbadmin delete catalog",
+    "bcdedit /set {default} recoveryenabled No"
+  )
+| extend Technique = "T1490"
+| extend Severity = "Critical"
+| extend ActorTag = "FIN-NC-001 pre-encryption anti-recovery — ransomware imminent"
+| extend MITRE_URL = "https://attack.mitre.org/techniques/T1490/"
+| project TimeGenerated, Computer, Account, CommandLine,
+          Severity, ActorTag, Technique, MITRE_URL
+
+
+// KQL-CTI-8: IAM Backdoor Pattern (T1136.003) — Cloud Persistence
+AWSCloudTrail
+| where TimeGenerated > ago(LookbackDays)
+| where EventName in ("CreateUser","AttachUserPolicy","CreateAccessKey","CreateRole")
+| where not (SourceIpAddress startswith "10.")
+| extend IsAdminPolicy = RequestParameters contains "AdministratorAccess"
+| extend IsCrossAccount = RequestParameters contains "987654321099"
+| where IsAdminPolicy or IsCrossAccount
+| extend Technique = case(
+    EventName == "CreateUser", "T1136.003",
+    EventName == "CreateRole" and IsCrossAccount, "T1078.004",
+    "T1098.001"
+  )
+| extend Severity = "Critical"
+| extend ActorTag = "FIN-NC-001 IAM backdoor pattern — cloud persistence"
+| project TimeGenerated, SourceIpAddress, EventName, RequestParameters,
+          IsAdminPolicy, IsCrossAccount, Technique, Severity, ActorTag
+
+
+// =========================================================================
+// THREAT INTEL DASHBOARD — 30-Day IOC Hit Summary
+// =========================================================================
+
+// KQL-CTI-9: Consolidated IOC Hit Scorecard
+let IPHits = CommonSecurityLog
+    | where TimeGenerated > ago(LookbackDays)
+    | where DestinationIP in (FIN_NC_001_IPs)
+    | summarize HitCount = count() by IOC = DestinationIP, Source = "Network";
+let HashHits = DeviceFileEvents
+    | where TimeGenerated > ago(LookbackDays)
+    | where SHA256 in (FIN_NC_001_Hashes)
+    | summarize HitCount = count() by IOC = SHA256, Source = "Endpoint";
+let DomainHits = DnsEvents
+    | where TimeGenerated > ago(LookbackDays)
+    | where Name in (FIN_NC_001_Domains)
+    | summarize HitCount = count() by IOC = Name, Source = "DNS";
+union IPHits, HashHits, DomainHits
+| extend Severity = case(HitCount > 100, "Critical",
+                         HitCount > 10,  "High",
+                         HitCount > 0,   "Medium",
+                         "None")
+| order by HitCount desc
