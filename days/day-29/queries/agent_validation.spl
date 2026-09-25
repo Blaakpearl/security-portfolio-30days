@@ -1,0 +1,161 @@
+| =========================================================================
+| Day 29 — Splunk SPL: AI Agent Performance & Validation Queries
+| NovaCrest Capital Group | AI Agent Integration
+| =========================================================================
+| Purpose: Monitor AI agent output quality, catch hallucinations,
+|          validate agent-generated detection queries before promotion,
+|          and track human analyst review disposition rates.
+| =========================================================================
+
+
+| =========================================================================
+| AGENT PERFORMANCE MONITORING
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY A-1: Triage Agent Accuracy Dashboard (Last 30 Days)
+| -------------------------------------------------------------------------
+index=ai_agent_audit sourcetype=triage_agent
+    earliest=-30d@d latest=now
+| eval is_correct=if(
+    (agent_severity=human_final_severity)
+    AND (agent_technique=human_final_technique),
+    1, 0
+  )
+| eval disposition=case(
+    human_disposition="TP_CONFIRMED", "True Positive",
+    human_disposition="FP_CONFIRMED", "False Positive",
+    human_disposition="PENDING", "Pending Review",
+    "Unknown"
+  )
+| stats count as total_triaged,
+        sum(is_correct) as correct_assessments,
+        sum(eval(if(disposition="True Positive",1,0))) as confirmed_TPs,
+        sum(eval(if(disposition="False Positive",1,0))) as confirmed_FPs,
+        avg(agent_latency_s) as avg_latency,
+        avg(agent_token_count) as avg_tokens
+    by strftime(_time, "%Y-%m")
+| eval accuracy_pct=round(correct_assessments/total_triaged*100, 1)
+| eval fp_rate_pct=round(confirmed_FPs/(confirmed_TPs+confirmed_FPs)*100, 1)
+| table strftime, total_triaged, correct_assessments, accuracy_pct,
+        confirmed_TPs, confirmed_FPs, fp_rate_pct, avg_latency, avg_tokens
+
+
+| -------------------------------------------------------------------------
+| QUERY A-2: Agent Hallucination Detection
+| Flag cases where agent cited non-existent IOC enrichment data
+| -------------------------------------------------------------------------
+index=ai_agent_audit sourcetype=triage_agent
+    earliest=-7d@d
+| eval ioc_cited=spath(agent_output, "enrichment_findings")
+| eval ioc_verified=spath(tool_call_results, "vt_lookup.verdict")
+| eval hallucination_flag=if(
+    like(ioc_cited, "%MALICIOUS%") AND ioc_verified!="MALICIOUS",
+    1, 0
+  )
+| where hallucination_flag=1
+| eval severity="High — Agent cited unverified IOC verdict"
+| table _time, alert_id, agent_id, ioc_cited, ioc_verified, severity
+| sort -_time
+
+
+| -------------------------------------------------------------------------
+| QUERY A-3: Human Review Queue — Pending AI Triage
+| Show analysts what needs their attention
+| -------------------------------------------------------------------------
+index=ai_agent_audit sourcetype=triage_agent
+    human_reviewed="false"
+    earliest=-24h@h
+| eval wait_hours=round((now() - _time) / 3600, 1)
+| eval sla_status=case(
+    agent_severity="CRITICAL" AND wait_hours > 0.5, "🔴 SLA BREACH (>30min)",
+    agent_severity="CRITICAL" AND wait_hours > 0.25, "🟡 SLA AT RISK",
+    agent_severity="HIGH" AND wait_hours > 2, "🟡 SLA AT RISK (>2hr)",
+    "✅ Within SLA"
+  )
+| table _time, alert_id, alert_name, agent_severity, agent_confidence,
+        wait_hours, sla_status, agent_recommended_action
+| sort -agent_severity, -wait_hours
+
+
+| =========================================================================
+| QUERY VALIDATION (AI-GENERATED DETECTION QUERIES)
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY A-4: Validate AI-Generated Query Against Simulation Data
+| Test each AI query before promotion to production
+| -------------------------------------------------------------------------
+| * Step 1: Run the AI-generated query against simulation dataset *
+| * Step 2: Compare output to expected detection events *
+
+index=simulation_data sourcetype=sysmon_simulation
+| eval expected_detection=case(
+    match(CommandLine, "(?i)winword.*cmd.*-enc"), "DET-001 should fire",
+    match(CommandLine, "(?i)vssadmin.*delete"), "DET-008 should fire",
+    1=1, "No detection expected"
+  )
+| join type=left CommandLine [
+    search index=simulation_data sourcetype=ai_query_results
+    | eval matched_rule=rule_id
+]
+| eval test_result=case(
+    expected_detection!="No detection expected" AND isnotnull(matched_rule),
+    "✅ TRUE POSITIVE",
+    expected_detection="No detection expected" AND isnotnull(matched_rule),
+    "❌ FALSE POSITIVE",
+    expected_detection!="No detection expected" AND isnull(matched_rule),
+    "❌ FALSE NEGATIVE",
+    "✅ TRUE NEGATIVE"
+)
+| stats count by test_result, expected_detection
+
+
+| -------------------------------------------------------------------------
+| QUERY A-5: AI Query FP Rate Monitoring (Post-Deployment)
+| Track how AI-generated queries perform in production
+| -------------------------------------------------------------------------
+index=notable sourcetype=es_notable
+    search_name IN ("AI-DET-001","AI-DET-005","AI-DET-009")
+    earliest=-7d@d
+| eval analyst_verdict=case(
+    status="resolved" AND urgency="informational", "FALSE_POSITIVE",
+    status="closed" AND urgency IN ("medium","high","critical"), "TRUE_POSITIVE",
+    status="open", "PENDING"
+  )
+| stats count as alert_count,
+        sum(eval(if(analyst_verdict="FALSE_POSITIVE",1,0))) as fp_count,
+        sum(eval(if(analyst_verdict="TRUE_POSITIVE",1,0))) as tp_count
+    by search_name
+| eval fp_rate_pct=round(fp_count/(fp_count+tp_count)*100, 1)
+| eval health=case(
+    fp_rate_pct > 20, "🔴 RETUNE — high FP",
+    fp_rate_pct > 10, "🟡 REVIEW — elevated FP",
+    fp_rate_pct <= 10, "✅ Acceptable"
+  )
+| table search_name, alert_count, tp_count, fp_count, fp_rate_pct, health
+
+
+| =========================================================================
+| COST & EFFICIENCY TRACKING
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY A-6: AI Agent Cost vs. Analyst Time Saved
+| Business case: time savings vs. API cost
+| -------------------------------------------------------------------------
+| makeresults
+| eval agent="Triage Agent"
+| eval alerts_triaged_30d=847
+| eval avg_agent_latency_s=2.3
+| eval avg_analyst_time_min=18      | * manual triage baseline *
+| eval api_cost_per_1k_tokens=0.003 | * claude-sonnet-4-6 pricing *
+| eval avg_tokens_per_alert=847
+| eval total_agent_cost=round(alerts_triaged_30d * avg_tokens_per_alert / 1000 * api_cost_per_1k_tokens, 2)
+| eval analyst_hours_saved=round(alerts_triaged_30d * avg_analyst_time_min / 60, 1)
+| eval analyst_hourly_rate=85       | * blended L1/L2 rate USD *
+| eval analyst_cost_saved=round(analyst_hours_saved * analyst_hourly_rate, 0)
+| eval net_roi=round(analyst_cost_saved - total_agent_cost, 0)
+| eval roi_pct=round(net_roi/total_agent_cost*100, 0)
+| table agent, alerts_triaged_30d, total_agent_cost, analyst_hours_saved,
+        analyst_cost_saved, net_roi, roi_pct

@@ -1,0 +1,139 @@
+{
+  "pipeline_name": "NovaCrest AI Security Analyst Pipeline",
+  "version": "1.0.0",
+  "environment": "production-staging",
+  "created": "2026-06-29T00:00:00Z",
+  "author": "V. Willis, CISSP",
+
+  "model_config": {
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 2048,
+    "temperature": 0,
+    "version_pinned": true,
+    "change_control_required": true,
+    "api_key_source": "aws_secrets_manager:novacrest/anthropic/api-key",
+    "api_key_rotation_days": 30
+  },
+
+  "agents": {
+    "triage_agent": {
+      "enabled": true,
+      "script": "scripts/triage_agent.py",
+      "input_source": "splunk_webhook",
+      "output_destination": "jira_queue",
+      "sla_critical_min": 30,
+      "sla_high_min": 120,
+      "confidence_threshold_for_auto_escalation": 70,
+      "human_review_required": true,
+      "can_take_direct_action": false
+    },
+    "ioc_enricher": {
+      "enabled": true,
+      "script": "scripts/ioc_enricher.py",
+      "input_source": "triage_agent_output",
+      "output_destination": "opencti_taxii",
+      "tools": ["virustotal_api", "shodan_api", "otx_api", "mitre_attck_taxii"],
+      "tool_call_logging": true,
+      "human_review_required": true,
+      "can_take_direct_action": false
+    },
+    "query_generator": {
+      "enabled": true,
+      "script": "scripts/ioc_enricher.py",
+      "mode": "query",
+      "output_destination": "detection_review_queue",
+      "siem_targets": ["splunk", "sentinel"],
+      "human_review_required": true,
+      "promotion_requires_unit_tests": true,
+      "can_take_direct_action": false
+    },
+    "report_drafter": {
+      "enabled": true,
+      "script": "scripts/ioc_enricher.py",
+      "mode": "report",
+      "output_destination": "security_slack_channel",
+      "output_label": "DRAFT — REQUIRES HUMAN REVIEW",
+      "human_review_required": true,
+      "can_take_direct_action": false
+    }
+  },
+
+  "guardrails": {
+    "human_in_the_loop": true,
+    "no_direct_production_action": true,
+    "all_outputs_labeled_draft": true,
+    "low_confidence_auto_escalate_pct": 70,
+    "accuracy_disable_threshold_pct": 80,
+    "hallucination_detection": true,
+    "audit_log_immutable": true,
+    "tool_call_logging": true,
+    "external_communication_blocked": true
+  },
+
+  "audit": {
+    "log_destination": "s3://novacrest-ai-audit-logs/",
+    "log_fields": ["invocation_id","timestamp","agent","alert_id","model",
+                    "input_hash","output_hash","tool_calls","latency_s",
+                    "token_count","human_reviewer","disposition"],
+    "retention_days": 365,
+    "encryption": "aws_kms:novacrest/ai-audit"
+  },
+
+  "integrations": {
+    "splunk_webhook": {
+      "endpoint": "http://localhost:8001/api/v1/alert",
+      "auth": "bearer_token",
+      "tls": true
+    },
+    "opencti": {
+      "url": "http://localhost:8080",
+      "auth": "bearer_token",
+      "collection": "novacrest-incident"
+    },
+    "jira": {
+      "url": "https://novacrest.atlassian.net",
+      "project": "SEC",
+      "issue_type": "AI_Triage",
+      "priority_mapping": {
+        "CRITICAL": "Highest",
+        "HIGH": "High",
+        "MEDIUM": "Medium",
+        "LOW": "Low"
+      }
+    },
+    "slack": {
+      "channel": "#security-ai-drafts",
+      "label_prefix": "[AI DRAFT]"
+    }
+  },
+
+  "evaluation": {
+    "monthly_accuracy_audit": true,
+    "accuracy_target_pct": 90,
+    "fp_rate_target_pct": 10,
+    "latency_target_s": 5,
+    "token_budget_per_alert": 2000,
+    "hallucination_check_enabled": true,
+    "query": "agent_validation.spl Query A-1"
+  },
+
+  "demo_alerts": {
+    "ALERT-001": {"severity": "CRITICAL", "attck": "T1071.001", "result": "CONFIRMED TP"},
+    "ALERT-002": {"severity": "CRITICAL", "attck": "T1490",     "result": "CONFIRMED TP"},
+    "ALERT-003": {"severity": "CRITICAL", "attck": "T1136.003", "result": "CONFIRMED TP"},
+    "ALERT-004": {"severity": "CRITICAL", "attck": "T1555.006", "result": "CONFIRMED TP"},
+    "ALERT-005": {"severity": "CRITICAL", "attck": "T1486",     "result": "CONFIRMED TP"}
+  },
+
+  "roi_estimate": {
+    "alerts_per_month": 847,
+    "manual_triage_min": 18,
+    "agent_latency_s": 2.3,
+    "analyst_hourly_rate_usd": 85,
+    "api_cost_per_1k_tokens_usd": 0.003,
+    "estimated_analyst_hours_saved_month": 254.1,
+    "estimated_cost_saved_month_usd": 21598,
+    "estimated_api_cost_month_usd": 2.15,
+    "roi_multiplier": "~10000x"
+  }
+}

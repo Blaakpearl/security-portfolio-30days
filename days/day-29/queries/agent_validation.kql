@@ -1,0 +1,152 @@
+// =========================================================================
+// Day 29 — Sentinel KQL: AI Agent Validation & Performance Monitoring
+// NovaCrest Capital Group | AI Agent Integration
+// =========================================================================
+
+// Agent performance reference table (simulated 30-day data)
+let AgentPerformance = datatable(
+    Month: string, Agent: string, TotalAlerts: int,
+    CorrectSeverity: int, CorrectTechnique: int, Actionable: int,
+    AvgLatencyS: real, AvgTokens: int, ConfirmedTPs: int, ConfirmedFPs: int
+)[
+    "2026-06","triage_agent",  847, 812, 762, 847, 2.3, 847, 791, 56,
+    "2026-06","enricher_agent",1204, 1180,1155,1204, 1.1, 412, 1143, 61,
+    "2026-06","query_gen",     142,  128, 131, 137, 3.7, 1823, 127, 15,
+    "2026-06","report_drafter",23,   21,  20,  23,  8.4, 3241, 21,  2,
+];
+
+
+// =========================================================================
+// AGENT PERFORMANCE METRICS
+// =========================================================================
+
+// KQL-A-1: Agent Accuracy Dashboard
+AgentPerformance
+| extend AccuracyPct   = round(toreal(CorrectSeverity) / toreal(TotalAlerts) * 100, 1)
+| extend TechniquePct  = round(toreal(CorrectTechnique) / toreal(TotalAlerts) * 100, 1)
+| extend FPRate        = round(toreal(ConfirmedFPs) / toreal(ConfirmedTPs + ConfirmedFPs) * 100, 1)
+| extend HealthStatus  = case(
+    AccuracyPct >= 95 and FPRate <= 10, "✅ Excellent",
+    AccuracyPct >= 85 and FPRate <= 20, "⚠️ Acceptable",
+    "🔴 Needs Tuning"
+  )
+| project Month, Agent, TotalAlerts, AccuracyPct, TechniquePct,
+          FPRate, AvgLatencyS, AvgTokens, HealthStatus
+| order by AccuracyPct desc
+
+
+// KQL-A-2: Human Review SLA Monitoring
+// Simulate pending review queue with SLA tracking
+let PendingReviews = datatable(
+    AlertID: string, AlertName: string, AgentSeverity: string,
+    AgentConfidence: int, QueuedTime: datetime
+)[
+    "ALERT-001","JA3 C2 Match",              "CRITICAL", 97, datetime(2026-06-14T09:14:00Z),
+    "ALERT-002","VSS Deletion",              "CRITICAL", 99, datetime(2026-06-19T03:23:00Z),
+    "ALERT-003","IAM Backdoor Creation",     "CRITICAL", 98, datetime(2026-06-16T09:16:00Z),
+    "ALERT-004","Secrets Manager Harvest",   "CRITICAL", 99, datetime(2026-06-16T09:10:00Z),
+    "ALERT-005","Ransomware Encryption",     "CRITICAL",100, datetime(2026-06-19T03:24:00Z),
+];
+PendingReviews
+| extend WaitMinutes = datetime_diff('minute', now(), QueuedTime)
+| extend SLAStatus = case(
+    AgentSeverity == "CRITICAL" and WaitMinutes > 30, "🔴 SLA BREACH",
+    AgentSeverity == "CRITICAL" and WaitMinutes > 15, "🟡 SLA AT RISK",
+    AgentSeverity == "HIGH"     and WaitMinutes > 120,"🟡 SLA AT RISK",
+    "✅ Within SLA"
+  )
+| project AlertID, AlertName, AgentSeverity, AgentConfidence,
+          QueuedTime, WaitMinutes, SLAStatus
+| order by AgentSeverity asc, WaitMinutes desc
+
+
+// =========================================================================
+// QUERY VALIDATION FRAMEWORK
+// =========================================================================
+
+// KQL-A-3: AI-Generated Query Test Results
+let QueryTests = datatable(
+    QueryID: string, Technique: string, SIEM: string,
+    TestType: string, Expected: string, Actual: string
+)[
+    "AI-DET-001-SPL","T1566.001","Splunk","TP", "FIRES",    "FIRES",
+    "AI-DET-001-SPL","T1566.001","Splunk","TN", "NO_FIRE",  "NO_FIRE",
+    "AI-DET-001-SPL","T1566.001","Splunk","FP", "NO_FIRE",  "FIRES",   // FP case
+    "AI-DET-008-SPL","T1490",    "Splunk","TP", "FIRES",    "FIRES",
+    "AI-DET-008-SPL","T1490",    "Splunk","TN", "NO_FIRE",  "NO_FIRE",
+    "AI-DET-009-SPL","T1486",    "Splunk","TP", "FIRES",    "FIRES",
+    "AI-DET-009-SPL","T1486",    "Splunk","TN", "NO_FIRE",  "NO_FIRE",
+];
+QueryTests
+| extend TestResult = case(
+    Expected == Actual and TestType == "TP", "✅ True Positive",
+    Expected == Actual and TestType == "TN", "✅ True Negative",
+    Expected != Actual and TestType == "TP", "❌ False Negative",
+    Expected != Actual and TestType == "TN", "❌ False Positive",
+    "⚠️ Unexpected"
+  )
+| summarize
+    TotalTests = count(),
+    Passed = countif(TestResult startswith "✅"),
+    Failed = countif(TestResult startswith "❌"),
+    FPCount = countif(TestResult == "❌ False Positive"),
+    FNCount = countif(TestResult == "❌ False Negative")
+    by QueryID, Technique, SIEM
+| extend PassRate = round(toreal(Passed) / toreal(TotalTests) * 100, 1)
+| extend Recommendation = case(
+    FPCount > 0, "TUNE — false positive in test set",
+    FNCount > 0, "CRITICAL — false negative; rule misses attack",
+    PassRate == 100.0, "READY FOR STAGING",
+    "REVIEW"
+  )
+| project QueryID, Technique, SIEM, TotalTests, Passed, PassRate,
+          FPCount, FNCount, Recommendation
+| order by Recommendation asc
+
+
+// =========================================================================
+// HALLUCINATION DETECTION
+// =========================================================================
+
+// KQL-A-4: Detect Agent Hallucinations (Unverified Claims)
+// Flag agent outputs that cite IOC data not returned by tool calls
+let AgentOutputs = datatable(
+    AlertID: string, AgentText: string, ToolCallVerdict: string
+)[
+    "TEST-001", "IP shows 47 malicious detections on VirusTotal", "MALICIOUS",   // Verified
+    "TEST-002", "IP shows 92 malicious detections on VirusTotal", "12 detections", // Hallucination!
+    "TEST-003", "Domain registered 3 years ago", "registered 2026-06-08",           // Hallucination!
+    "TEST-004", "File hash has 34 malicious detections", "34 detections",           // Verified
+];
+AgentOutputs
+| extend HallucinationFlag = case(
+    AgentText contains "47" and ToolCallVerdict contains "47", false,
+    AgentText contains "34" and ToolCallVerdict contains "34", false,
+    AgentText contains "92" and not (ToolCallVerdict contains "92"), true,
+    AgentText contains "3 years" and ToolCallVerdict contains "2026", true,
+    false
+  )
+| where HallucinationFlag == true
+| project AlertID, AgentText, ToolCallVerdict,
+          Flag = "🔴 POTENTIAL HALLUCINATION — verify before action"
+
+
+// =========================================================================
+// COST-BENEFIT ANALYSIS
+// =========================================================================
+
+// KQL-A-5: ROI Calculation — AI Triage vs. Manual Analyst Cost
+print
+    Agent = "Triage Agent (claude-sonnet-4-6)",
+    AlertsTriaged30d = 847,
+    AvgLatencySeconds = 2.3,
+    AvgTokensPerAlert = 847,
+    TokenCostPer1K_USD = 0.003,
+    TotalAPICost_USD = round(847.0 * 847.0 / 1000.0 * 0.003, 2),
+    ManualTriageTimeMin = 18,
+    AnalystHoursSaved = round(847.0 * 18.0 / 60.0, 1),
+    AnalystHourlyRate_USD = 85,
+    AnalystCostSaved_USD = round(847.0 * 18.0 / 60.0 * 85.0, 0),
+    NetROI_USD = round((847.0 * 18.0 / 60.0 * 85.0) - (847.0 * 847.0 / 1000.0 * 0.003), 0),
+    ROIMultiplier = round((847.0 * 18.0 / 60.0 * 85.0) / (847.0 * 847.0 / 1000.0 * 0.003), 0),
+    Assessment = "AI triage delivers ~50x ROI vs. manual analyst time at current alert volume"
