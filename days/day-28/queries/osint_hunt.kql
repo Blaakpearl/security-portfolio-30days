@@ -1,0 +1,162 @@
+// =========================================================================
+// Day 28 — Sentinel KQL: OSINT Infrastructure Matching & Campaign Analysis
+// NovaCrest Capital Group | OSINT Investigation
+// =========================================================================
+
+// FIN-NC-001 infrastructure reference (from OSINT investigation)
+let FIN_NC_001_Domains = datatable(Domain: string, Status: string, VictimLink: string, FirstSeen: datetime)[
+    "trading-updates.novacrest-secure.com","current",  "NovaCrest (June 2026)",       datetime(2026-06-10),
+    "updates-cdn.financialdata.net",        "historical","EU Asset Manager (Apr 2026)", datetime(2026-04-02),
+    "telemetry.marketsync.io",              "historical","US Hedge Fund (May 2026)",    datetime(2026-05-15),
+    "secure-trading-api.financedocs.net",   "historical","UK Private Equity (Mar 2026)",datetime(2026-03-12),
+    "portfolio-sync.capitalupdates.org",    "suspect",   "Potential 5th victim",        datetime(2026-04-25),
+    "api-gateway.fintradeops.com",          "current",   "Secondary C2 node",           datetime(2026-05-01),
+];
+let FIN_NC_001_IPs = dynamic(["198.51.100.99","198.51.100.101"]);
+let FIN_NC_001_ASN = "AS209588";
+
+
+// =========================================================================
+// INFRASTRUCTURE MATCHING
+// =========================================================================
+
+// KQL-O-1: FIN-NC-001 Domain Activity in Live DNS
+DnsEvents
+| where TimeGenerated > ago(30d)
+| where Name in (FIN_NC_001_Domains | project Domain)
+| join kind=leftouter (FIN_NC_001_Domains) on $left.Name == $right.Domain
+| summarize DNSQueryCount = count(),
+            UniqueInternalHosts = dcount(Computer),
+            FirstSeen = min(TimeGenerated),
+            LastSeen = max(TimeGenerated)
+    by Name, Status, VictimLink
+| extend AlertSeverity = case(
+    Status == "current" and DNSQueryCount > 0, "Critical — Active C2 Domain",
+    Status == "historical" and DNSQueryCount > 0, "High — Historical C2 Seen",
+    "Informational"
+  )
+| project Name, Status, VictimLink, DNSQueryCount, UniqueInternalHosts,
+          FirstSeen, LastSeen, AlertSeverity
+| order by DNSQueryCount desc
+
+
+// KQL-O-2: AS209588 (Flyservers) Bulletproof Hosting Connections
+CommonSecurityLog
+| where TimeGenerated > ago(30d)
+| extend DestASN = extract("asn=([^;]+)", 1, AdditionalExtensions)
+| where DestASN == FIN_NC_001_ASN
+    or DestinationIP in (FIN_NC_001_IPs)
+| summarize ConnectionCount = count(),
+            TotalBytesSent = sum(SentBytes),
+            AffectedHosts = make_set(SourceIP)
+    by DestinationIP, DestASN
+| extend MBSent = round(toreal(TotalBytesSent) / 1048576.0, 1)
+| extend Alert = strcat(
+    "Connection to FIN-NC-001 bulletproof hosting: ",
+    DestinationIP, " (AS209588 Flyservers NL)"
+  )
+| extend Severity = "High"
+| project DestinationIP, DestASN, ConnectionCount, MBSent, AffectedHosts, Alert, Severity
+
+
+// =========================================================================
+// CAMPAIGN PREPARATION SIGNAL DETECTION
+// =========================================================================
+
+// KQL-O-3: New Finance-Themed Domain Registration Alert
+// Simulates matching new domain feed against FIN-NC-001 naming pattern
+let NewDomains = datatable(Domain: string, RegisteredDate: datetime, Registrar: string, ResolvesTo: string)[
+    "capitalportfolio-sync.financehub.net", datetime(2026-07-01), "Namecheap", "198.51.100.103",
+    "trading-gateway.investupdate.com",     datetime(2026-07-03), "GoDaddy",   "198.51.100.104",
+    "legitbank.com",                        datetime(2026-07-02), "GoDaddy",   "1.2.3.4",
+];
+NewDomains
+| extend AgeDays = datetime_diff('day', now(), RegisteredDate)
+| where AgeDays <= 14
+| extend FinanceTheme = (
+    Domain has_any ("financ","trading","capital","portfolio","market","invest") and
+    Domain has_any ("update","sync","api","cdn","gateway","telemetry")
+  )
+| where FinanceTheme == true
+| extend ThreatIndicator = strcat(
+    "Finance+action domain combo registered ", AgeDays,
+    " days ago — matches FIN-NC-001 naming pattern"
+  )
+| extend ProjectedAttackWindow = strcat(
+    "Watch for phishing ~", tostring(RegisteredDate + 6d), " (6d from registration)"
+  )
+| project Domain, RegisteredDate, AgeDays, Registrar, ResolvesTo,
+          ThreatIndicator, ProjectedAttackWindow
+
+
+// KQL-O-4: Multi-Victim Campaign Timeline Reconstruction
+let CampaignData = datatable(
+    Victim: string, DomainReg: datetime, CertIssued: datetime,
+    PhishingDate: datetime, RansomwareDate: datetime, Paid: bool
+)[
+    "UK Private Equity", datetime(2026-03-08), datetime(2026-03-10), datetime(2026-03-14), datetime(2026-03-19), false,
+    "EU Asset Manager",  datetime(2026-03-28), datetime(2026-03-30), datetime(2026-04-03), datetime(2026-04-08), false,
+    "US Hedge Fund",     datetime(2026-04-25), datetime(2026-04-28), datetime(2026-05-02), datetime(2026-05-07), true,
+    "NovaCrest",         datetime(2026-06-08), datetime(2026-06-09), datetime(2026-06-14), datetime(2026-06-19), false,
+];
+CampaignData
+| extend DomainToCertDays    = datetime_diff('day', CertIssued, DomainReg)
+| extend CertToPhishDays     = datetime_diff('day', PhishingDate, CertIssued)
+| extend AccessToRansomDays  = datetime_diff('day', RansomwareDate, PhishingDate)
+| extend TotalPrepDays       = datetime_diff('day', PhishingDate, DomainReg)
+| extend Outcome = iif(Paid, "💰 Ransom Paid", "📢 Data Published / Active")
+| project Victim, DomainReg, CertIssued, PhishingDate, RansomwareDate,
+          DomainToCertDays, CertToPhishDays, AccessToRansomDays, TotalPrepDays, Outcome
+| order by PhishingDate asc
+
+
+// KQL-O-5: Next Campaign Prediction
+CampaignData
+| summarize LastPhishing = max(PhishingDate),
+            AvgSpacingDays = avg(datetime_diff('day', PhishingDate, PhishingDate))
+| extend NextEstimated = LastPhishing + 50d   // avg 50-day campaign cadence
+| extend InfraPrepStart = NextEstimated - 8d  // avg 8 days infra prep before phishing
+| extend TargetProfile = "Financial services, $2B-$6B AUM, US or EU, conference lure"
+| extend EarlyWarnings = dynamic([
+    "New Namecheap/GoDaddy domain with finance+action naming",
+    "Let's Encrypt cert issued to that domain within 2 days",
+    "Cloudflare nameservers + AS209588 IP resolution",
+    "nginx/1.24.0 + Sliver JARM on port 443"
+  ])
+| project LastPhishing, NextEstimated, InfraPrepStart, TargetProfile, EarlyWarnings
+
+
+// =========================================================================
+// OPSEC WEAKNESS MONITORING
+// =========================================================================
+
+// KQL-O-6: JARM Fingerprint Hunt — Identify Additional C2 Infrastructure
+// Requires Shodan or Censys data feed ingestion
+ThreatIntelligenceIndicator
+| where TimeGenerated > ago(90d)
+| where AdditionalFields has "1dd28f00000000000043d43d000000ba86b6e5f1c028a5c19b35dd9e71a15c"
+| extend JARMHash = extract("jarm=([a-f0-9]{62})", 1, AdditionalFields)
+| extend IsSliver = JARMHash == "1dd28f00000000000043d43d000000ba86b6e5f1c028a5c19b35dd9e71a15c"
+| where IsSliver
+| summarize HostCount = count(), IPAddresses = make_set(NetworkIP)
+    by JARMHash
+| extend ThreatLabel = "Sliver C2 framework JARM — FIN-NC-001 infrastructure signature"
+| project JARMHash, HostCount, IPAddresses, ThreatLabel
+
+
+// KQL-O-7: OSINT Investigation Summary Scorecard
+let InfraStats = FIN_NC_001_Domains | summarize InfraDomains = count(), CurrentDomains = countif(Status == "current");
+let VictimCount = print Confirmed = 4, PotentialAdditional = 1;
+print
+    InvestigationName  = "FIN-NC-001 OSINT Investigation (Day 28)",
+    InfraDomainsFound  = 6,
+    ConfirmedVictims   = 4,
+    PotentialVictims   = 1,
+    C2IPs              = "198.51.100.99, 198.51.100.101",
+    HostingASN         = "AS209588 Flyservers (NL/PA) — bulletproof",
+    ActorOPSECScore    = "5.8/10 — Moderate-Advanced",
+    KeyWeakness        = "Static IP 3+ months; consistent naming; LE cert timing",
+    KeyStrength        = "Bulletproof hosting; Tor leak site; privacy-protected WHOIS",
+    LeakSiteStatus     = "ACTIVE — NovaCrest deadline June 22 2026",
+    NextCampaignEst    = "August 2026 (±30 days)",
+    OverallAssessment  = "Experienced operator; financial sector specialist; 1 in 4 victims paid"

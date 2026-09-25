@@ -1,0 +1,204 @@
+| =========================================================================
+| Day 28 — Splunk SPL: OSINT Passive Intelligence Queries
+| NovaCrest Capital Group | OSINT Investigation
+| =========================================================================
+| Purpose: Match live telemetry against OSINT-discovered FIN-NC-001
+|          infrastructure; detect campaign preparation signals; track
+|          threat actor domain registration patterns
+| =========================================================================
+
+
+| =========================================================================
+| INFRASTRUCTURE MATCHING
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY O-1: All FIN-NC-001 Infrastructure in Live Network Traffic
+| Covers both current and historical C2 domains
+| -------------------------------------------------------------------------
+| inputlookup fin_nc_001_infrastructure.csv
+| rename domain as query
+| join type=left query [
+    search index=zeek_dns sourcetype=zeek:dns
+        earliest=-30d@d
+    | rename query as query
+    | stats count as dns_count,
+            dc(id.orig_h) as internal_hosts,
+            min(_time) as first_seen,
+            max(_time) as last_seen
+        by query
+]
+| eval status=case(
+    dns_count > 0 AND domain_status="current", "🔴 ACTIVE C2 DOMAIN IN DNS",
+    dns_count > 0 AND domain_status="historical", "🟠 HISTORICAL C2 DOMAIN SEEN",
+    "ℹ️ No DNS hits"
+  )
+| table domain, domain_status, victim_link, dns_count, internal_hosts,
+        first_seen, last_seen, status
+| sort -dns_count
+
+
+| -------------------------------------------------------------------------
+| QUERY O-2: ASN-Based Connection Detection (AS209588 Flyservers)
+| Detect any internal host connecting to bulletproof VPS range
+| -------------------------------------------------------------------------
+index=zeek_conn sourcetype=zeek:conn
+    earliest=-30d@d
+| lookup asn_lookup ip AS id.resp_h OUTPUT asn, asn_name, country
+| where asn="AS209588"
+| stats count as connection_count,
+        sum(orig_bytes) as bytes_out_total,
+        dc(id.orig_h) as internal_hosts,
+        values(id.orig_h) as source_hosts,
+        values(id.resp_h) as dest_ips
+    by asn, asn_name
+| eval mb_out=round(bytes_out_total/1048576, 1)
+| eval severity="High"
+| eval alert="Internal host connecting to AS209588 (Flyservers) bulletproof hosting"
+| table asn, asn_name, connection_count, mb_out, internal_hosts,
+        source_hosts, dest_ips, severity, alert
+
+
+| =========================================================================
+| CAMPAIGN PREPARATION SIGNALS
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY O-3: New Domain Registration Pattern Match
+| Detect FIN-NC-001 domain naming convention in new domain intel feeds
+| Triggers: finance/trading/capital/portfolio/market + update/sync/api/cdn
+| -------------------------------------------------------------------------
+| inputlookup new_domains_feed.csv
+    | where age_days <= 14    | * only recently registered domains
+| eval fin_theme=if(
+    (like(lower(domain), "%financ%") OR like(lower(domain), "%trading%")
+     OR like(lower(domain), "%capital%") OR like(lower(domain), "%portfolio%")
+     OR like(lower(domain), "%market%") OR like(lower(domain), "%invest%"))
+    AND
+    (like(lower(domain), "%update%") OR like(lower(domain), "%sync%")
+     OR like(lower(domain), "%api%") OR like(lower(domain), "%cdn%")
+     OR like(lower(domain), "%telemetry%") OR like(lower(domain), "%gateway%")),
+    1, 0
+  )
+| where fin_theme=1
+| eval threat_indicator="Finance-themed domain registered <14 days ago — matches FIN-NC-001 naming pattern"
+| table domain, registrar, registered_date, age_days, resolves_to_ip, resolves_to_asn,
+        threat_indicator
+| sort registered_date
+
+
+| -------------------------------------------------------------------------
+| QUERY O-4: Certificate Transparency — Let's Encrypt Certs for Finance Domains
+| New LE certs for financial-themed domains precede FIN-NC-001 attacks by 3-6 days
+| -------------------------------------------------------------------------
+| inputlookup ct_log_feed.csv
+    | where ca="Let's Encrypt" AND age_days <= 7
+| eval fin_theme=if(
+    (like(lower(common_name), "%financ%") OR like(lower(common_name), "%trading%")
+     OR like(lower(common_name), "%capital%") OR like(lower(common_name), "%market%")),
+    1, 0
+  )
+| where fin_theme=1
+| eval attack_window=strftime(
+    strptime(issued_date, "%Y-%m-%d") + 86400*6, "%Y-%m-%d"
+  )
+| eval threat_indicator="New LE cert for finance domain — FIN-NC-001 uses this pattern; potential attack within 3-6 days"
+| table common_name, san, issued_date, attack_window, resolves_to_ip,
+        threat_indicator
+| sort issued_date
+
+
+| =========================================================================
+| DARK WEB / LEAK SITE MONITORING
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY O-5: Ransomwatch Feed — NovaCrest Leak Site Monitoring
+| Alert on NovaCrest victim page update (data published = deadline passed)
+| -------------------------------------------------------------------------
+| inputlookup ransomwatch_feed.csv
+| where like(lower(victim_name), "%novacrest%")
+    OR like(lower(victim_name), "%nca-2026-06%")
+| eval status_change=if(
+    data_published="true" AND lag(data_published)="false",
+    "🔴 DATA PUBLISHED — ransom not paid; disclosure required",
+    if(data_published="true",
+       "🔴 DATA LIVE ON LEAK SITE",
+       "🟡 ACTIVE — deadline pending")
+  )
+| table _time, group_name, victim_name, data_published,
+        leak_site_url, status_change
+| sort -_time
+
+
+| =========================================================================
+| HISTORICAL VICTIM CORRELATION
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY O-6: Cross-Victim Domain Registration Clustering
+| Visualize infrastructure preparation timeline per victim
+| -------------------------------------------------------------------------
+| makeresults count=4
+| eval victim_data=case(
+    _n=1, "UK Private Equity|2026-03-08|2026-03-10|2026-03-14|2026-03-19|financedocs.net",
+    _n=2, "EU Asset Manager|2026-03-28|2026-03-30|2026-04-03|2026-04-08|financialdata.net",
+    _n=3, "US Hedge Fund|2026-04-25|2026-04-28|2026-05-02|2026-05-07|marketsync.io",
+    _n=4, "NovaCrest|2026-06-08|2026-06-09|2026-06-14|2026-06-19|novacrest-secure.com"
+  )
+| eval fields=split(victim_data, "|")
+| eval victim=mvindex(fields,0),
+       domain_reg=mvindex(fields,1),
+       cert_issued=mvindex(fields,2),
+       phishing_date=mvindex(fields,3),
+       ransomware_date=mvindex(fields,4),
+       infra_domain=mvindex(fields,5)
+| eval prep_days=datediff(
+    strptime(cert_issued, "%Y-%m-%d"),
+    strptime(phishing_date, "%Y-%m-%d"),
+    "day"
+  )
+| eval dwell_days=datediff(
+    strptime(phishing_date, "%Y-%m-%d"),
+    strptime(ransomware_date, "%Y-%m-%d"),
+    "day"
+  )
+| table victim, domain_reg, cert_issued, phishing_date, ransomware_date,
+        infra_domain, prep_days, dwell_days
+
+
+| -------------------------------------------------------------------------
+| QUERY O-7: JARM Fingerprint — Hunt for Same C2 Framework Globally
+| Identify all Shodan-visible hosts with FIN-NC-001 JARM fingerprint
+| -------------------------------------------------------------------------
+| inputlookup shodan_feed.csv
+| where jarm="1dd28f00000000000043d43d000000ba86b6e5f1c028a5c19b35dd9e71a15c"
+| eval threat_label="Sliver C2 JARM — FIN-NC-001 infrastructure signature"
+| eval asn_flag=if(asn="AS209588", "🔴 Same ASN as NovaCrest C2", "🟡 Different ASN")
+| stats count as global_host_count,
+        values(ip) as ips,
+        values(asn) as asns,
+        values(country) as countries
+    by jarm, threat_label
+| table jarm, global_host_count, ips, asns, countries, threat_label
+
+
+| =========================================================================
+| EXECUTIVE REPORTING
+| =========================================================================
+
+| -------------------------------------------------------------------------
+| QUERY O-8: OSINT Investigation Summary Dashboard
+| -------------------------------------------------------------------------
+| makeresults
+| eval summary="FIN-NC-001 OSINT Investigation Summary"
+| eval infrastructure_nodes=6
+| eval confirmed_victims=4
+| eval potential_victims=1
+| eval c2_ips="198.51.100.99, 198.51.100.101"
+| eval actor_opsec_score="5.8/10 (Moderate-Advanced)"
+| eval key_weakness="Static C2 IP + consistent naming pattern + Let's Encrypt timing"
+| eval leak_site_status="ACTIVE — NovaCrest deadline June 22, 2026"
+| eval recommended_action="Share IOCs with FS-ISAC; alert peer firms; FBI referral"
+| table summary, infrastructure_nodes, confirmed_victims, potential_victims,
+        c2_ips, actor_opsec_score, key_weakness, leak_site_status, recommended_action
