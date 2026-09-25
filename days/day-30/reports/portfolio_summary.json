@@ -1,0 +1,77 @@
+{
+  "portfolio": {
+    "name": "30-Day AI-Augmented Security Analyst Portfolio",
+    "url": "https://github.com/Blaakpearl/security-portfolio-30days",
+    "live_site": "https://blaakpearl.github.io/security-portfolio-30days/",
+    "analyst": "V. Willis, CISSP",
+    "completed": "2026-06-30",
+    "scenario": "NovaCrest Capital Group — NCA-2026-06"
+  },
+  "scale": {
+    "total_days": 30,
+    "total_files_estimate": 297,
+    "total_lines_estimate": 58000,
+    "python_scripts": 52,
+    "sigma_rules": 12,
+    "yara_rules": 14,
+    "splunk_spl_queries": 87,
+    "kql_queries": 72,
+    "eql_rules": 6,
+    "stix_objects": 47,
+    "attck_techniques": 37
+  },
+  "tracks": {
+    "Threat Intelligence": {"days": 6,  "key_days": [3,9,13,22,26]},
+    "Digital Forensics":   {"days": 6,  "key_days": [8,12,19,25]},
+    "Threat Hunting":      {"days": 6,  "key_days": [4,10,17,18,24]},
+    "Purple Team":         {"days": 7,  "key_days": [6,15,16,20,21,27]},
+    "OSINT":               {"days": 5,  "key_days": [1,5,11,23,28]},
+    "Full Stack":          {"days": 4,  "key_days": [7,14,29,30]}
+  },
+  "incident": {
+    "case_id": "NCA-2026-06",
+    "threat_actor": "FIN-NC-001",
+    "attribution": "GOLD MYSTIC / LockBit affiliate (78% confidence)",
+    "initial_vector": "Spearphishing macro-enabled Excel via conference OSINT (T1566.001)",
+    "c2_ip": "198.51.100.99",
+    "c2_ja3": "a0e9f5d64349fb13191bc781f81f42e1",
+    "dwell_days": 5,
+    "exfil_mb_total": 375,
+    "ransomware_family": "LockBit 3.0 builder variant",
+    "ransomware_extension": ".ncrypt",
+    "files_encrypted": 26168,
+    "data_encrypted_gb": 2215,
+    "ransom_demanded_usd": 4200000,
+    "ransom_paid": false,
+    "recovery_path": "June 13 backup (pre-compromise)",
+    "active_backdoors_found": 2
+  },
+  "before_after": {
+    "detection_rules_before": 0,
+    "detection_rules_after": 12,
+    "attck_coverage_before_pct": 0,
+    "attck_coverage_after_pct": 44,
+    "ransomware_mttd_before": "2h 50min (post-completion)",
+    "ransomware_mttd_after": "<60 seconds (during encryption)",
+    "c2_mttd_before": "Undetected",
+    "c2_mttd_after": "<1 minute (JA3 rule)",
+    "ai_triage_latency_s": 2.3,
+    "ai_triage_manual_equivalent_min": 18
+  },
+  "key_findings": [
+    "Single public Instagram photo (GPS + conference hashtag) enabled entire spearphishing campaign",
+    "Attacker maintained static C2 IP for 3+ months across 4 victim campaigns — OPSEC weakness",
+    "Ransom formula: consistently 0.1% of target AUM across all 4 confirmed victims",
+    "Two IAM backdoors (svc-monitoring-ops + CrossAccountReadRole) not found during initial IR — discovered only in Day 26 cloud hunt",
+    "Ransomware ran for 2h 50min undetected — DET-008 (VSS deletion) existed but had zero test coverage",
+    "DET-009 (encryption rate early warning) would have detected ransomware within 60 seconds — did not exist pre-breach",
+    "Let's Encrypt cert issuance 6 days before phishing = predictive early warning signal for next campaign"
+  ],
+  "regulatory": {
+    "NY_DFS_72hr": "OVERDUE",
+    "SEC_material_incident": "OVERDUE",
+    "SEC_Reg_SP": "Due July 14 2026",
+    "FBI_IC3": "Filed",
+    "FS_ISAC_sharing": "STIX bundle submitted TLP:AMBER"
+  }
+}
